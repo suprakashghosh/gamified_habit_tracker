@@ -25,11 +25,13 @@ Build a Next.js 15 gamified habit tracker structured as a quest-board across dai
 
 **In scope:** Full gamified habit tracker with quest-board UI, counter-based progress, tier-scaled XP/leveling, LLM task generation with quantifiability checks and clarification flow, admin panel with counter allocation, Supabase persistence, Vercel deployment, mobile responsiveness.
 
-**Out of scope:** Multi-user/auth, dark mode, streaks, PWA, recurring LLM coaching, AI-generated insights, social features, habit analytics dashboard, achievements/badges, character stats, boss battles.
+**Out of scope:** Dark mode, streaks, PWA, recurring LLM coaching, AI-generated insights, social features, habit analytics dashboard, achievements/badges, character stats, boss battles.
+
+**MVP access control (in scope):** Simple admin password via `ADMIN_PASSWORD` env var. Next.js middleware protects `/admin` route and all mutation Server Actions. Game view (`/`) remains public-readable for sharing progress. Not full multi-user auth — just a shared secret to prevent strangers from mutating data or burning LLM API credits.
 
 ## Assumptions and Constraints
 
-- Single-user personal tool (no auth for MVP)
+- Single-user personal tool with admin password protection (middleware + `ADMIN_PASSWORD` env var) to guard admin route and all mutations
 - Vercel hosting (serverless functions, env vars for secrets)
 - Supabase free tier PostgreSQL (500MB)
 - Geist font via `next/font` (bundled, no external CDN dependency)
@@ -53,14 +55,20 @@ Task {
   max_count: number                      // total units for this task
   current_count: number                  // progress so far (0 → max_count)
   xp_per_unit: number                    // XP awarded per counter increment
+  recurrence_group_id?: string          // groups recurring instances across periods
+  period_start?: DateTime               // start of the period this instance belongs to
+  period_end?: DateTime                 // end of the period (used for unique constraint)
   is_recurring: boolean                  // true only for standalone tasks without hierarchy
   is_published: boolean                  // false = draft in admin, true = live
   sort_order: number                     // manual drag-to-reorder position
   status: "draft" | "active" | "completed" | "missed"
-  expires_at?: DateTime                  // for recurring tasks: when this instance expires
+  expires_at?: DateTime                  // for recurring tasks: when this instance expires (same as period_end)
   created_at: DateTime
   completed_at?: DateTime
 }
+
+// Unique constraint: @@unique([recurrence_group_id, period_start])
+// Prevents duplicate recurring instances for the same period.
 ```
 
 **Parenting rules:**
@@ -88,9 +96,10 @@ Task {
 tap leaf task → current_count++ → revalidatePath("/")
   → server: increment counter, award XP per unit
   → if current_count == max_count: mark leaf as "completed"
-  → walk up parent chain: recalculate parent progress as Σ(children.current_count) / Σ(children.max_count)
-  → if parent Σ(current) == parent.max_count: mark parent completed (full count reached)
-  → parent children may not all be individually complete when parent finishes
+  → walk up parent chain: recalculate parent progress as Σ(children.current_count)
+  → if parent Σ(current) == parent.max_count for the first time:
+      mark parent completed, award parent completion bonus XP
+  → all children are individually complete when parent completes (by sum enforcement)
 ```
 
 ### XP & Leveling System
@@ -107,13 +116,18 @@ tap leaf task → current_count++ → revalidatePath("/")
 
 **XP calculation:** `awarded_xp = increment_count × xp_per_unit × tier_multiplier`
 
+**XP award rules:**
+- **Leaf tasks (daily, or standalone any tier):** Each tap awards its own tier-scaled XP per unit. No parent XP awarded during leaf taps.
+- **Parent completion bonus:** When a parent task's `Σ(children.current_count)` reaches its `max_count` for the first time, award a one-time **parent completion bonus**: `parent.xp_per_unit × parent.max_count × tier_multiplier`. This is a milestone award, not per-child-increment. Prevent duplicates via `XPTransaction` unique key `(task_id, reason: "parent_completion")`.
+- **Undo rollback:** When `decrementProgress` is called, reverse the corresponding XP transaction(s) by writing negative-adjustment `XPTransaction` rows, recompute the parent chain, and unset parent completion status if the sum drops below max. See Sub-Task 3 for full undo semantics.
+
 Default `xp_per_unit` per tier (LLM-assigned, user-overridable):
-| Tier | Default xp_per_unit | With multiplier | Example (max: 10) |
-|------|-------------------|-----------------|---------------------|
-| Daily | 5 | 5 XP/unit | 50 XP for full completion |
-| Weekly | 30 | 150 XP/unit | 1500 XP |
-| Monthly | 100 | 2500 XP/unit | 25000 XP |
-| Longterm | 300 | 30000 XP/unit | 300000 XP |
+| Tier | Default xp_per_unit | With multiplier | Example (max: 10) | Parent completion bonus |
+|------|-------------------|-----------------|---------------------|--------------------------|
+| Daily | 5 | 5 XP/unit | 50 XP for full leaf | N/A (leaf/daily has no children) |
+| Weekly | 30 | 150 XP/unit | 1500 XP | 1500 XP when all children done |
+| Monthly | 100 | 2500 XP/unit | 25000 XP | 25000 XP when all children done |
+| Longterm | 300 | 30000 XP/unit | 300000 XP | 300000 XP when all children done |
 
 **Level thresholds:** `100 × 1.5^(N-1)`
 - Level 1: 0 XP (start)
@@ -151,7 +165,7 @@ const TaskDraft = z.object({
   description: z.string().optional(),
   unit: z.string(),
   tier: z.enum(["daily", "weekly", "monthly", "longterm"]),
-  max_count: z.number().int().positive(),
+  max_count: z.number().int().nonnegative(),   // 0 for unallocated children, positive for roots/standalone
   xp_per_unit: z.number().int().positive(),
   is_recurring: z.boolean(),
   children: z.array(/* recursive TaskDraft */).optional(),
@@ -191,9 +205,13 @@ const GenerationResponse = z.object({
 
 Secrets (`.env.local` / Vercel env vars, never committed):
 ```
-DATABASE_URL=postgresql://... (Supabase connection)
+DATABASE_URL=postgresql://... (Supabase pooled/transaction-mode connection for runtime)
+DIRECT_URL=postgresql://... (Supabase direct/session-mode connection for migrations)
 LLM_API_KEY=sk-...
+ADMIN_PASSWORD=your-shared-secret-here
 ```
+
+`DATABASE_URL` is the pooled (PgBouncer/transaction-mode) URL for serverless runtime. `DIRECT_URL` is the direct (session-mode) URL used only for `prisma migrate deploy`. Both must be set in Vercel env vars.
 
 ## Sub-Tasks
 
@@ -210,7 +228,8 @@ LLM_API_KEY=sk-...
   - Create `gamified.config.json` with default values and TypeScript types
   - Create `.env.local.example` with dummy values
   - Configure Geist + Geist Mono fonts in root layout
-  - Project structure: `src/app/`, `src/components/`, `src/actions/`, `src/lib/`, `src/types/`
+  - Create `src/middleware.ts` — protects `/admin` route and all mutation Server Actions by checking `ADMIN_PASSWORD` header/env var. Game view (`/`) remains public-readable. Store password hash in env, compare in middleware
+  - Project structure: `src/app/`, `src/components/`, `src/actions/`, `src/lib/`, `src/types/`, `src/middleware.ts`
 - **Out of Scope:** UI components, database schema, LLM logic, server actions
 - **Instructions:**
   1. Run `npx create-next-app@latest . --typescript --tailwind --eslint --app --src-dir --no-import-alias` (in current directory)
@@ -219,6 +238,7 @@ LLM_API_KEY=sk-...
   4. Create `src/types/config.ts` with Zod schema for config validation
   5. Create `src/lib/config.ts` to read and validate `gamified.config.json`
   6. Set up `src/app/layout.tsx` with Geist font
+  7. Create `src/middleware.ts`: check for `/admin` path prefix → require `Authorization: Bearer <ADMIN_PASSWORD>` header or cookie. For mutation Server Actions, also validate the admin token in each action (defense in depth). Return 401 for unauthorized requests to protected routes/actions
 - **Acceptance Criteria:**
   - `npm run dev` starts without errors
   - Tailwind tokens render with correct colors, spacing, typography
@@ -240,16 +260,25 @@ LLM_API_KEY=sk-...
 - **Dependencies:** Sub-Task 1
 - **In Scope:**
   - `schema.prisma` with:
-    - `Task` model: id, title, description, unit, tier(enum), parent_id(self-relation), max_count, current_count, xp_per_unit, is_recurring, is_published, sort_order, status(enum: draft|active|completed|missed), expires_at, created_at, completed_at
-    - `XPTransaction` model: id, amount, source_task_id, created_at
+     - `Task` model: id, title, description, unit, tier(enum), parent_id(self-relation), max_count, current_count, xp_per_unit, recurrence_group_id, period_start, period_end, is_recurring, is_published, sort_order, status(enum: draft|active|completed|missed), expires_at, created_at, completed_at
+    - `XPTransaction` model: id, amount, source_task_id, reason (enum: "leaf_increment" | "parent_completion" | "undo" | "missed_penalty"), linked_transaction_id (nullable, for undo reversal), created_at
+    - Application-level guard (or conditional unique index): before inserting parent_completion, check no existing row with same (source_task_id, reason). Prevents duplicate parent bonuses
     - `AppState` model: id(single row, "singleton"), total_xp, current_level, created_at, updated_at
-  - Indexes on `tier`, `parent_id`, `sort_order`, `status`, `is_published`
-  - Supabase connection via `DATABASE_URL` env var
+   - Indexes on `tier`, `parent_id`, `sort_order`, `status`, `is_published`, `recurrence_group_id`
+   - Unique constraint on `(recurrence_group_id, period_start)` for recurring task idempotency
+   - Supabase connection via `DATABASE_URL` (pooled, runtime) and `DIRECT_URL` (session, migrations) env vars
   - Initial migration + Prisma client generation
 - **Out of Scope:** Seed scripts, API routes, UI
 - **Instructions:**
   1. Create `prisma/schema.prisma` with models above
-  2. Add `DATABASE_URL` to `.env` with Supabase connection string (use Session mode for Prisma migrations, Transaction mode for runtime — or use Supavisor)
+   2. Add `DATABASE_URL` and `DIRECT_URL` to `.env`. Prisma schema datasource uses both:
+      ```
+      datasource db {
+        provider  = "postgresql"
+        url       = env("DATABASE_URL")   // pooled connection for runtime
+        directUrl = env("DIRECT_URL")     // direct connection for migrations
+      }
+      ```
   3. Run `npx prisma migrate dev --name init`
   4. Generate client: `npx prisma generate`
   5. Create `src/lib/prisma.ts` with singleton Prisma client
@@ -278,10 +307,10 @@ LLM_API_KEY=sk-...
     - `createTask(data)` — creates a single task (draft or active)
     - `updateTask(id, data)` — updates task fields (admin editing)
     - `deleteTask(id)` — removes a task and its children
-    - `incrementProgress(taskId)` — tap handler: validates, increments counter, awards XP (using tier multiplier), marks complete if full, propagates to parents, revalidates
-    - `decrementProgress(taskId)` — undo handler: reverses increment (only if within undo window, counter > 0)
+    - `incrementProgress(taskId)` — tap handler: validates, increments counter, awards XP per unit for the tapped (leaf) task only. If counter reaches max_count, marks leaf complete. Walks up parent chain recalculating each parent's Σ(children.current_count); if any parent reaches its max_count for the first time, marks it complete AND awards a one-time parent completion bonus (guarded by unique XPTransaction key `task_id + reason:"parent_completion"`). Revalidates, returns `{ newCount, isComplete, xpAwarded, parentCompletions: [{parentId, bonusXP}], newLevel, leveledUp, undoToken }`
+     - `decrementProgress(taskId, undoToken)` — undo handler: compensating transaction. Validates undo window server-side (3 minutes from original increment). Reverses XP (writes negative `XPTransaction` with `reason: "undo"` and `linked_transaction_id`), decrements counter, walks up parent chain to recalculate and possibly un-complete parents, revalidates. Requires undo token from original increment response to prevent replay attacks
     - `reorderTasks(orderedIds)` — updates sort_order for a list
-    - `publishTasks(taskIds)` — flips is_published: true after validating child counter sums match parent
+    - `publishTasks(taskIds)` — recursively validates every parent-child boundary in the hierarchy: Σ(children.max_count) == parent.max_count, all children share parent.unit, and child tier is exactly one step lower. Rejects if any boundary fails (with specific error pointing to which parent/child). Flips is_published: true on all validated tasks
     - `allocateChildCounters(parentId, allocations: {childId, maxCount}[])` — distributes parent units to children, enforces sum equality
     - `processTaskLifecycle()` — finds expired recurring tasks, marks missed, creates next-period clones, recalculates affected parent progress
   - `src/actions/xp.ts` — Server actions:
@@ -297,22 +326,23 @@ LLM_API_KEY=sk-...
 - **Instructions:**
   1. Implement pure XP math first (`src/lib/xp.ts`) — thoroughly tested, no side effects
   2. Implement `awardXP` action: atomic (transaction), update AppState, return `{ newXP, newLevel, leveledUp }`
-  3. Implement `incrementProgress`:
-     - Validate task exists, is published, is active
-     - Verify `current_count < max_count`
-     - Use Prisma `$transaction`: increment counter → if full, mark as completed, set completed_at → award XP → walk up parent chain: recalculate parent's current_count as sum of children's current_count (but parent max_count is the sum of children's max_count, which was validated at publish)
-     - Revalidate `/` path
-     - Return `{ newCount, isComplete, xpAwarded, newLevel, leveledUp }`
-  4. Implement `publishTasks`: validate all root tasks' children sums, set is_published, revalidate admin path
-  5. Implement `processTaskLifecycle`:
-     - Query: recurring tasks where status=active and expires_at < now()
-     - For each: update status to missed, create new task with same fields but reset current_count, new expires_at (end of period)
-     - Call from root layout server component on each page load
-     - Ensure idempotent (don't re-process already-missed tasks)
-     - Recalculate parent progress if affected
+   3. Implement `incrementProgress`:
+      - Validate task exists, is published, is active
+      - Verify `current_count < max_count`
+      - Use Prisma `$transaction`: increment counter → if leaf reaches max_count, mark completed, set completed_at, award leaf XP → walk up parent chain (iterative, up to 4 levels): recalculate each parent's current_count as Σ(children.current_count) → if parent's sum reaches parent.max_count for the first time (check previous sum < max_count), mark parent completed, award parent completion bonus XP with unique guard key `(taskId, "parent_completion")` → update AppState XP total, check level-up
+      - Generate a server-side undo token (crypto random, stored temporarily or as part of XPTransaction) for the 3-minute undo window
+      - Revalidate `/` path
+      - Return `{ newCount, isComplete, xpAwarded, parentCompletions, newLevel, leveledUp, undoToken }`
+   4. Implement `publishTasks`: recursively walk all tasks with children, validate at every boundary: Σ(children.max_count) == task.max_count, children.unit == task.unit, child.tier is one step below parent. Return specific error with failing task IDs if any boundary fails. If all pass, set is_published=true on all tasks in the tree
+   5. Implement `processTaskLifecycle`:
+      - Query: recurring tasks where status=active AND expires_at < now()
+      - NOTE: completed recurring tasks stay `completed` until next period boundary — they do NOT regenerate mid-period (prevents XP farming)
+      - For each expired active task: update status to missed, then create a new recurring instance with same fields but reset current_count=0, new period_start/period_end, new expires_at=next period boundary, same recurrence_group_id
+      - Use `upsert` based on unique constraint `(recurrence_group_id, period_start)` for idempotency
+      - Call from root layout server component on each page load (no cron needed for MVP)
 - **Acceptance Criteria:**
   - `incrementProgress` works: counter++, XP awarded, parent updates, complete flag set at max
-  - `decrementProgress` reverses (within window)
+   - `decrementProgress` reverses counter AND XP (compensating transaction), propagates un-completion up parent chain
   - `publishTasks` rejects unbalanced children
   - `processTaskLifecycle` correctly expires tasks and creates next-period clones
   - XP correctly calculates tier multipliers
@@ -443,7 +473,7 @@ LLM_API_KEY=sk-...
 - **Cautionary Points:**
   - LLM API key: stored in Vercel env vars (`process.env.LLM_API_KEY`). Never exposed to client. `generateObject` call is in server action only
   - LLM failure handling: rate limits, timeouts, malformed JSON. Show specific error toast, allow retry. Don't crash the page
-  - Model switching: `gamified.config.json` specifies provider ("openai" | "anthropic" | "groq") and model. Use appropriate `@ai-sdk/*` provider. Dynamically import or use generic `generateObject` with provider parameter
+   - Model switching: MVP supports OpenAI only (`@ai-sdk/openai`). `gamified.config.json` `provider` field reserved for future Anthropic/Groq providers. To add a provider later, install the corresponding `@ai-sdk/<provider>` package and update config
   - Prompt engineering: include explicit few-shot examples covering: quantifiable todo decomposition, ambiguous todo detection, tier-appropriate XP values, unit assignment
   - Recursive task insertion: generate children with `parent_id` linking. Use Prisma `createMany` with explicit IDs for efficiency, or recursive `create` calls
   - Draft task cleanup: delete old drafts on each new generation, or allow user to manage drafts independently
@@ -468,11 +498,13 @@ LLM_API_KEY=sk-...
   - Idempotency guard: mark processed with a timestamp or check status before re-processing
 - **Out of Scope:** Vercel cron jobs, push notifications, grace period for missed tasks
 - **Instructions:**
-  1. Review and polish `processTaskLifecycle` from Sub-Task 3:
-     - Ensure `expires_at` is set correctly in `createTask`: daily = end of today, weekly = end of week, monthly = end of month, longterm = far future or null
-     - For new recurring instances: clone all fields except current_count (reset to 0), new expires_at (end of next period), new id
-     - Mark original as status: "missed"
-     - If original has parent relationship (shouldn't happen per rules, but defensive), recalculate parent progress
+   1. Review and polish `processTaskLifecycle` from Sub-Task 3:
+      - Ensure `expires_at` is set correctly in `createTask`: daily = end of today, weekly = end of week, monthly = end of month, longterm = far future or null
+      - Set `period_start` and `period_end` matching the task's tier period boundaries
+      - For new recurring instances: clone all fields except current_count (reset to 0), new period_start/period_end, new expires_at (end of next period), same recurrence_group_id, new id
+      - Mark original as status: "missed" if expired and incomplete; leave as "completed" if it was completed
+      - Completed recurring tasks stay `completed` until period boundary passes — no immediate regeneration mid-period
+      - If original has parent relationship (shouldn't happen per rules, but defensive), recalculate parent progress
   2. Add visual indicator: missed tasks get a red "Missed" badge. Show for 24 hours after expiry, then hide (archived)
   3. Add `expires_at` display on task cards for recurring tasks (small clock icon + "Resets at midnight" tooltip)
   4. Add validation in `createTask` and `updateTask` server actions: reject `is_recurring: true` if task has parent_id or has existing children
@@ -484,7 +516,7 @@ LLM_API_KEY=sk-...
 - **Cautionary Points:**
   - Race condition: two rapid page loads could both create next-period instance. Use DB-level constraint (unique index on `recurrence_group_id` + `period_start`) or `upsert` with a generated key
   - Period boundaries: daily rollover at midnight server time. If user is in a different timezone, this feels off. Provide `timezone` field in config for v2
-  - Marking missed vs completed: only mark missed if expired AND incomplete (current_count < max_count). Completed recurring tasks should auto-regenerate immediately (current_count == max_count) and old instance marked completed
+   - Marking missed vs completed: only mark missed if expired AND incomplete (current_count < max_count). Completed recurring tasks stay `completed` until the next period boundary (expires_at passes), then the lifecycle creates a new instance for the new period. This prevents XP farming from immediate regeneration
   - Missed task cleanup: eventually delete or archive old missed tasks to prevent DB bloat. For MVP, keep them
 - **Testing Suggestions:**
   - Vitest: create recurring task with past expires_at, call lifecycle, assert missed + new task created
@@ -554,7 +586,7 @@ LLM_API_KEY=sk-...
     - Task expiry: create expiring task, verify missed badge and new instance
     - Drag reorder: drag task to new position, verify persistence after page reload
     - Level-up: complete enough tasks to level up, verify overlay triggers
-  - Test database: separate Supabase database (or use `prisma/db-test.sqlite` for Vitest, Playwright against dev Supabase)
+   - Test database: dedicated Supabase test database. Use `DATABASE_URL` and `DIRECT_URL` from `.env.test.local` (never committed). For pure XP math tests, no database needed. For Server Action and Prisma tests, run against Postgres (Supabase test project) to match production
 - **Out of Scope:** Unit tests for individual React components, 100% code coverage, performance testing
 - **Instructions:**
   1. Configure Vitest: install `vitest @vitejs/plugin-react`. Create `vitest.config.ts`
@@ -575,7 +607,8 @@ LLM_API_KEY=sk-...
   - LLM mocking: mock `generateObject` to return predictable test data. Never call real LLM in tests
   - `.env.test.local` for test DB URL, not committed
 - **Testing Suggestions:**
-  - Key Vitest test: `incrementProgress` on daily leaf → parent weekly current_count increases by 1 → XPTransaction created with tier-multiplied XP
+  - Key Vitest test: `incrementProgress` on daily leaf → parent weekly current_count increases by 1 → leaf XPTransaction created with tier-multiplied XP → when parent sum reaches parent.max_count, parent completion XPTransaction with reason "parent_completion" is created (once only)
+  - Key Vitest test: `decrementProgress` after `incrementProgress` → counter reversed, negative XPTransaction created with reason "undo", parent completion un-set if sum drops below max
   - Key E2E test: complete admin-to-game flow end-to-end with seeded dummy LLM response
 
 ---
@@ -588,7 +621,7 @@ LLM_API_KEY=sk-...
 - **Dependencies:** Sub-Task 1-9 (all features complete)
 - **In Scope:**
   - Create Vercel project (linked to GitHub repo)
-  - Set Vercel env vars: `DATABASE_URL` (production Supabase), `LLM_API_KEY`
+   - Set Vercel env vars: `DATABASE_URL` (pooled/production Supabase), `DIRECT_URL` (session/direct Supabase for migrations), `LLM_API_KEY`, `ADMIN_PASSWORD`
   - Push `gamified.config.json` with production model choice
   - Run `npx prisma migrate deploy` against production Supabase
   - Deploy to Vercel preview (staging) → verify → promote to production
@@ -596,7 +629,7 @@ LLM_API_KEY=sk-...
 - **Out of Scope:** Custom domain, CI/CD beyond Vercel git integration, uptime monitoring, analytics
 - **Instructions:**
   1. Create Supabase project (if not already): get production `DATABASE_URL`
-  2. Run `npx prisma migrate deploy` with production DATABASE_URL (use direct connection, not Supavisor, for migrations)
+   2. Run `npx prisma migrate deploy` with production DIRECT_URL (direct connection string) — this ensures migrations apply via session mode while runtime uses pooled DATABASE_URL
   3. Install Vercel CLI: `npm i -g vercel`
   4. Run `vercel` → link to project → configure env vars in dashboard
   5. Deploy: `vercel --prod`
@@ -609,8 +642,8 @@ LLM_API_KEY=sk-...
   - LLM generation works with production API key
   - All features functional in production
 - **Cautionary Points:**
-  - Prisma migration in Vercel build: add `npx prisma migrate deploy` to `postinstall` or `build` script in `package.json`. Or run manually before first deploy
-  - `DATABASE_URL` for Supabase: use Session mode (port 5432) for migrations, Transaction mode (port 6543) for runtime to avoid PgBouncer issues. Vercel env var should be Transaction mode URL. Run migration manually with Session mode URL
+   - Prisma migration in Vercel build: run `npx prisma migrate deploy` with `DIRECT_URL` env var as a manual pre-deploy step, NOT in `postinstall`/`build` (avoids unexpected migrations during deploys). For production, migrate manually before first deploy, then only when schema changes
+   - `DATABASE_URL` for Supabase: pooled (port 6543 or Supavisor) for Vercel runtime. `DIRECT_URL` (port 5432, session mode) for migrations. Both set in Vercel env vars. `DIRECT_URL` is only used by `prisma migrate deploy`
   - Cold starts: Prisma can be slow on Vercel serverless. Consider Prisma Accelerate or use Supabase direct with `@supabase/supabase-js` for queries (v2 optimization)
   - Preview deployments share env vars but use separate databases — set `DATABASE_URL` per environment if needed
 - **Validation:** Full end-to-end checklist run on production URL
@@ -626,8 +659,8 @@ LLM_API_KEY=sk-...
   4. Tap daily task → verify counter becomes 1/1 → task greys out, shifts to bottom
   5. Verify weekly parent progress: 1/3 (from completed daily)
   6. Complete all 3 daily tasks for week → weekly marks complete
-  7. Verify XP: daily taps award small XP, weekly completion awards larger XP with tier multiplier
-  8. Complete enough to level up → verify level-up overlay triggers
+   7. Verify XP: daily taps award leaf XP (small, daily tier). When weekly parent completes (all 3 daily children done), verify one-time parent completion bonus XPTransaction with reason "parent_completion" awards larger XP with weekly tier multiplier. Repeat for monthly completion
+   8. Complete enough to level up → verify level-up overlay triggers
   9. Create standalone recurring daily "Drink 8 glasses" → tap 8 times → task completes → new instance appears tomorrow
   10. Let recurring task expire incomplete → verify "missed" badge, new instance for next day
 
