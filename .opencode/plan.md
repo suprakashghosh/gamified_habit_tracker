@@ -11,7 +11,7 @@ Build a Next.js 15 gamified habit tracker structured as a quest-board across dai
 | **R1** | Four-tier quest tab UI (daily/weekly/monthly/long-term) styled per RainShift/Geist design system with bottom tab bar on mobile, top pills on desktop |
 | **R2** | Strict task hierarchy: longterm → monthly → weekly → daily. Standalone tasks allowed at any tier (parent_id null). Hierarchical tasks are always one-shot. Only standalone tasks can recur |
 | **R3** | Unit consistency: root parent defines unit and total counter. Children get empty counters; user allocates them in admin panel. Σ(children.max_count) must equal parent.max_count before publish |
-| **R4** | Counter-based progress: tap-to-increment (+1), max counter, undo toast (3-second). Completed tasks greyed out, auto-sorted to bottom. Drag-to-reorder within each tab |
+| **R4** | Counter-based progress: tap-to-increment (+1). Leaf tasks have soft caps (can exceed planned max_count with `+N` overflow indicator). Branch tasks auto-grow max_count to match child over-delivery. Root tasks (longterm hierarchy root or standalone at any tier) have hard caps — taps rejected when root reaches its max_count. Parent completion bonus fires once at planned threshold. Undo toast (3-second). Completed/fully-capped tasks greyed out, auto-sorted to bottom. Drag-to-reorder within each tab |
 | **R5** | Tier-scaled XP + Levels: per-unit XP scaled by tier (daily < weekly < monthly < longterm). Exponential thresholds (100 × 1.5^(N-1)). Account-wide. Level-up animation. XP lost opportunity on task expiry (no deduction) |
 | **R6** | LLM on-demand generation: user enters raw todo → LLM checks quantifiability → returns structured tree with clarifications for ambiguous items → user resolves clarifications → user allocates child counters → publishes. Model/provider configurable via `gamified.config.json` |
 | **R7** | Admin panel (`/admin`) with: raw todo input, generate button, clarification UI, inline editable table with counter allocation, publish button. Draft vs published state |
@@ -52,8 +52,8 @@ Task {
   unit: string                           // e.g. "pages", "chapters", "glasses", "km"
   tier: "daily" | "weekly" | "monthly" | "longterm"
   parent_id?: string (self-reference)
-  max_count: number                      // total units for this task
-  current_count: number                  // progress so far (0 → max_count)
+  max_count: number                      // planned total for this task. For roots/standalone: hard cap. For branches/leaves: estimate (can be exceeded via over-delivery)
+  current_count: number                  // progress so far (can exceed max_count for non-root tasks)
   xp_per_unit: number                    // XP awarded per counter increment
   recurrence_group_id?: string          // groups recurring instances across periods
   period_start?: DateTime               // start of the period this instance belongs to
@@ -71,35 +71,40 @@ Task {
 // Prevents duplicate recurring instances for the same period.
 ```
 
-**Parenting rules:**
-| Tier | Can be parent of | Can be child of | Can recur? |
-|------|-----------------|------------------|------------|
-| longterm | monthly | nothing | No (always hierarchical) |
-| monthly | weekly | longterm | No (always hierarchical) |
-| weekly | daily | monthly | No (always hierarchical) |
-| daily | nothing (leaf) | weekly | Only if standalone (no parent, no children) |
+**Parenting rules + Cap behavior:**
+| Tier | Can be parent of | Can be child of | Can recur? | Cap type |
+|------|-----------------|------------------|------------|----------|
+| longterm | monthly | nothing | No | Hard (hierarchy root) |
+| monthly | weekly | longterm | No | Soft (auto-grows to match children) |
+| weekly | daily | monthly | No | Soft (auto-grows to match children) |
+| daily | nothing (leaf) | weekly | Only if standalone | Soft if child, Hard if standalone |
 
 **Unit consistency rule:** Root parent defines `unit` and `max_count`. When LLM generates a hierarchical tree, children get `max_count: 0`. User allocates parent's `max_count` across children in admin panel. Before publish: Σ(children.max_count) must equal parent.max_count. This prevents unit-mixing errors (e.g., chapters vs pages).
 
 ### Task Types
 
-| Type | parent_id | has children | can recur | Example |
-|------|-----------|--------------|-----------|---------|
-| Standalone | null | No | Optional | "Drink 8 glasses of water" (daily, recurring) / "Read 1 article" (daily, one-shot) |
-| Hierarchical root | null | Yes | No | "Read The Pragmatic Programmer — 24 chapters" (longterm) |
-| Hierarchical branch | Yes | Yes | No | "Read 12 chapters" (monthly, child of root) |
-| Hierarchical leaf | Yes | No | No | "Read 2 chapters" (daily, child of weekly) |
+| Type | parent_id | has children | cap | can recur | Example |
+|------|-----------|--------------|-----|-----------|---------|
+| Standalone | null | No | Hard | Optional | "Drink 8 glasses of water" (daily, recurring) / "Read 1 article" (daily, one-shot) |
+| Hierarchical root | null | Yes | Hard | No | "Read The Pragmatic Programmer — 24 chapters" (longterm) |
+| Hierarchical branch | Yes | Yes | Soft | No | "Read 12 chapters" (monthly, child of root) — max grows if children over-deliver |
+| Hierarchical leaf | Yes | No | Soft | No | "Read 2 chapters" (daily, child of weekly) — can exceed 2, UI shows `3/2 (+1)` |
 
 ### Progress Propagation
 
+**Cap model:**
+- **Soft cap (branch/leaf):** Task can exceed its `max_count`. UI shows overflow indicator. Branch `max_count` auto-grows to match Σ(children.current_count) when children over-deliver.
+- **Hard cap (root/standalone):** Task locks at `max_count`. `incrementProgress` walks up parent chain to find the root; if root.current_count >= root.max_count, tap rejected.
+- **Parent completion bonus:** Fires once when a parent's Σ(children.current_count) first reaches its planned `max_count`. Never fires on over-delivery (guarded by existing `XPTransaction` with reason `"parent_completion"`).
+
 ```
-tap leaf task → current_count++ → revalidatePath("/")
-  → server: increment counter, award XP per unit
-  → if current_count == max_count: mark leaf as "completed"
-  → walk up parent chain: recalculate parent progress as Σ(children.current_count)
-  → if parent Σ(current) == parent.max_count for the first time:
-      mark parent completed, award parent completion bonus XP
-  → all children are individually complete when parent completes (by sum enforcement)
+tap leaf task → walk up to find root → if root.current_count >= root.max_count: REJECT
+  → server: increment leaf counter (no per-tap ceiling for non-root)
+  → if leaf counter exceeds leaf.max_count: mark leaf status as "completed" (already was), no bonus
+  → walk up parent chain: recalculate each parent's current_count as Σ(children.current_count)
+  → if parent Σ(current) > parent.max_count: auto-grow parent.max_count to match (soft cap)
+  → if parent Σ(current) first reaches planned parent.max_count: mark parent completed, award parent completion bonus XP
+  → if root Σ(current) >= root.max_count: root hard-cap hit, future taps on this tree rejected
 ```
 
 ### XP & Leveling System
@@ -217,7 +222,7 @@ ADMIN_PASSWORD=your-shared-secret-here
 
 ### Sub-Task 1: Project Scaffold & Design Tokens
 
-- **Status:** Pending
+- **Status:** Completed
 - **Objective:** Bootstrap Next.js 15 project with App Router, configure Tailwind v4 with RainShift design tokens, install all dependencies, set up config file schema.
 - **Related Requirements:** R1, R9, R10
 - **Dependencies:** None (starting point)
@@ -307,7 +312,7 @@ ADMIN_PASSWORD=your-shared-secret-here
     - `createTask(data)` — creates a single task (draft or active)
     - `updateTask(id, data)` — updates task fields (admin editing)
     - `deleteTask(id)` — removes a task and its children
-    - `incrementProgress(taskId)` — tap handler: validates, increments counter, awards XP per unit for the tapped (leaf) task only. If counter reaches max_count, marks leaf complete. Walks up parent chain recalculating each parent's Σ(children.current_count); if any parent reaches its max_count for the first time, marks it complete AND awards a one-time parent completion bonus (guarded by unique XPTransaction key `task_id + reason:"parent_completion"`). Revalidates, returns `{ newCount, isComplete, xpAwarded, parentCompletions: [{parentId, bonusXP}], newLevel, leveledUp, undoToken }`
+    - `incrementProgress(taskId)` — tap handler. Pre-check: walk up parent_id chain to find root task (self if standalone). If root.current_count >= root.max_count, return `{ locked: true }` (hard cap). Otherwise: use Prisma $transaction to increment leaf counter (no per-tap ceiling check — soft cap). Award leaf XP per unit. If leaf.current_count == leaf.max_count (planned threshold first hit), mark leaf as "completed". Walk up parent chain recalculating parents: auto-grow parent.max_count if children exceed it, check for first-time parent completion at planned threshold, award one-time parent completion bonus if due. Update AppState XP, check level-up. Revalidate, return `{ newCount, isComplete, xpAwarded, parentCompletions, newLevel, leveledUp, undoToken }`
      - `decrementProgress(taskId, undoToken)` — undo handler: compensating transaction. Validates undo window server-side (3 minutes from original increment). Reverses XP (writes negative `XPTransaction` with `reason: "undo"` and `linked_transaction_id`), decrements counter, walks up parent chain to recalculate and possibly un-complete parents, revalidates. Requires undo token from original increment response to prevent replay attacks
     - `reorderTasks(orderedIds)` — updates sort_order for a list
     - `publishTasks(taskIds)` — recursively validates every parent-child boundary in the hierarchy: Σ(children.max_count) == parent.max_count, all children share parent.unit, and child tier is exactly one step lower. Rejects if any boundary fails (with specific error pointing to which parent/child). Flips is_published: true on all validated tasks
@@ -327,12 +332,11 @@ ADMIN_PASSWORD=your-shared-secret-here
   1. Implement pure XP math first (`src/lib/xp.ts`) — thoroughly tested, no side effects
   2. Implement `awardXP` action: atomic (transaction), update AppState, return `{ newXP, newLevel, leveledUp }`
    3. Implement `incrementProgress`:
-      - Validate task exists, is published, is active
-      - Verify `current_count < max_count`
-      - Use Prisma `$transaction`: increment counter → if leaf reaches max_count, mark completed, set completed_at, award leaf XP → walk up parent chain (iterative, up to 4 levels): recalculate each parent's current_count as Σ(children.current_count) → if parent's sum reaches parent.max_count for the first time (check previous sum < max_count), mark parent completed, award parent completion bonus XP with unique guard key `(taskId, "parent_completion")` → update AppState XP total, check level-up
-      - Generate a server-side undo token (crypto random, stored temporarily or as part of XPTransaction) for the 3-minute undo window
+      - **Pre-check:** Walk `parent_id` chain to root. For standalone tasks, root = self. If `root.current_count >= root.max_count`, return `{ locked: true }` immediately. No transaction needed for rejection.
+      - Use Prisma `$transaction`: increment leaf counter (allowed to exceed leaf.max_count — soft cap) → award leaf XP per unit → check if leaf.current_count == leaf.max_count for the first time, mark leaf completed → walk up parent chain (iterative, up to 4 levels): recalculate each parent's current_count as Σ(children.current_count). If parent.Σ > parent.max_count, auto-grow parent.max_count to match (soft cap for branches). If parent.Σ first reaches its planned max_count (check previous value < planned max), mark parent completed, award parent completion bonus XP with guard check `(taskId, reason: "parent_completion")` → recursively check parent-of-parent same way → update AppState XP total, check level-up
+      - Generate server-side undo token for 3-minute window
       - Revalidate `/` path
-      - Return `{ newCount, isComplete, xpAwarded, parentCompletions, newLevel, leveledUp, undoToken }`
+      - Return `{ newCount, isComplete, overflow: currentCount > maxCount, xpAwarded, parentCompletions, newLevel, leveledUp, undoToken }`
    4. Implement `publishTasks`: recursively walk all tasks with children, validate at every boundary: Σ(children.max_count) == task.max_count, children.unit == task.unit, child.tier is one step below parent. Return specific error with failing task IDs if any boundary fails. If all pass, set is_published=true on all tasks in the tree
    5. Implement `processTaskLifecycle`:
       - Query: recurring tasks where status=active AND expires_at < now()
@@ -341,14 +345,16 @@ ADMIN_PASSWORD=your-shared-secret-here
       - Use `upsert` based on unique constraint `(recurrence_group_id, period_start)` for idempotency
       - Call from root layout server component on each page load (no cron needed for MVP)
 - **Acceptance Criteria:**
-  - `incrementProgress` works: counter++, XP awarded, parent updates, complete flag set at max
+   - `incrementProgress` works: counter++ (past max_count allowed for non-root), XP awarded, parent auto-grows when children over-deliver, parent completion bonus fires once at planned threshold, root hard cap rejects taps when root max reached
    - `decrementProgress` reverses counter AND XP (compensating transaction), propagates un-completion up parent chain
   - `publishTasks` rejects unbalanced children
   - `processTaskLifecycle` correctly expires tasks and creates next-period clones
   - XP correctly calculates tier multipliers
   - Level-up detection returns correct `leveledUp` boolean
 - **Cautionary Points:**
-  - Parent progress: since children share parent's unit and children.max_count sum = parent.max_count, parent progress = simple sum of children's current_count. No need for percentage math; parent completes when sum == parent.max_count
+   - Parent progress: since children share parent's unit, parent progress = Σ(children.current_count). Branch parent max_count auto-grows when children over-deliver (soft cap). Root parent max_count is a hard cap — taps rejected once root.current_count >= root.max_count
+   - Root-walk pre-check: before incrementing, find root by walking parent_id chain. This is cheap (max 4 hops). If root is fully-capped, reject early to avoid starting a transaction that will fail
+   - Over-delivery UI: leaf cards show `current/max (+overflow)` when current_count > max_count. Same grey-out treatment as completed tasks when root hard-caps
   - Concurrent taps: Prisma `$transaction` with optimistic locking (check current_count hasn't changed since read) or use `increment` atomically
   - Recursive parent walk: use iterative approach (while loop up parent_id chain). Hierarchies are max 4 deep (longterm→monthly→weekly→daily), so recursion with a depth limit also works
   - Timezone for expiry: default to UTC; `gamified.config.json` can include `timezone` field later
@@ -379,15 +385,15 @@ ADMIN_PASSWORD=your-shared-secret-here
 - **Out of Scope:** XP animations (Sub-Task 5), admin panel, LLM integration
 - **Instructions:**
   1. Build `XPHUD` first: reads XP state from a server component passed as prop, renders level badge + progress bar
-  2. Build `TaskCard`: tailwind-styled card per DESIGN.md (canvas bg, md rounded, lg padding, L3 shadow). Counter display: `3 / 8 glasses`. Tap handler calls `incrementProgress` server action. Undo: 3-second `setTimeout`, shows `sonner` toast with undo button, calls `decrementProgress`. Completed state: opacity-50, muted text, background canvas-soft
+   2. Build `TaskCard`: tailwind-styled card per DESIGN.md (canvas bg, md rounded, lg padding, L3 shadow). Counter display: `3 / 8 glasses` when within cap, `5 / 3 (+2)` when over-delivering (soft cap). Tap handler calls `incrementProgress` server action. If response is `{ locked: true }`, show a subtle "Complete" badge and disable tap. Undo: 3-second `setTimeout`, shows `sonner` toast with undo button, calls `decrementProgress`. Completed/capped state: opacity-50, muted text, background canvas-soft
   3. Build `QuestBoard`: tab pills (rounded pill-sm, 64px). Active tab highlighted with ink bg + white text. Inactive: canvas bg, ink text. Framer Motion `AnimatePresence` for tab transitions. `Reorder.Group` for drag-to-reorder with `onReorder` calling `reorderTasks` server action
   4. Build `MobileTabBar`: fixed bottom, 4 icon tabs, safe-area padding. Hidden on desktop (`md:hidden`)
   5. Wire `page.tsx`: fetch tasks with `prisma.task.findMany({ where: { is_published: true }, include: { children: true }, orderBy: [{ status: 'asc' }, { sort_order: 'asc' }] })`. Group by tier. Call `processTaskLifecycle` on page load
   6. Handle empty state: "No quests available. Generate some in the admin panel!" with link to `/admin`
 - **Acceptance Criteria:**
   - Four tabs render, tab switching works (URL updates)
-  - Tap increments counter, XP updates in HUD
-  - Undo toast appears, undo reverses counter
+   - Tap increments counter, XP updates in HUD. Tapping past planned max shows overflow indicator. Hard-cap tasks reject taps when fully complete
+   - Undo toast appears, undo reverses counter
   - Completed tasks grey out and sink to bottom of their tab
   - Drag reorder persists (calls server action)
   - Mobile: bottom tab bar, desktop: top pills
@@ -607,7 +613,9 @@ ADMIN_PASSWORD=your-shared-secret-here
   - LLM mocking: mock `generateObject` to return predictable test data. Never call real LLM in tests
   - `.env.test.local` for test DB URL, not committed
 - **Testing Suggestions:**
-  - Key Vitest test: `incrementProgress` on daily leaf → parent weekly current_count increases by 1 → leaf XPTransaction created with tier-multiplied XP → when parent sum reaches parent.max_count, parent completion XPTransaction with reason "parent_completion" is created (once only)
+  - Key Vitest test: `incrementProgress` on daily leaf past leaf.max_count → leaf counter exceeds max, parent max_count auto-grows, parent completion bonus fires once at planned threshold, no duplicate bonus on over-delivery
+  - Key Vitest test: `incrementProgress` on leaf when root is already at hard cap → returns `{ locked: true }`, counter unchanged, no XPTransaction
+  - Key Vitest test: `incrementProgress` on standalone task at max_count → returns `{ locked: true }` (standalone = root = hard cap)
   - Key Vitest test: `decrementProgress` after `incrementProgress` → counter reversed, negative XPTransaction created with reason "undo", parent completion un-set if sum drops below max
   - Key E2E test: complete admin-to-game flow end-to-end with seeded dummy LLM response
 
@@ -656,10 +664,10 @@ ADMIN_PASSWORD=your-shared-secret-here
   1. Generate tasks via admin: "Read The Pragmatic Programmer (24 chapters)" → verify longterm root created with 24 chapters unit
   2. Allocate counters: monthly gets 12, weekly gets 3 per week, daily gets 1
   3. Publish → verify tasks appear in all four tabs
-  4. Tap daily task → verify counter becomes 1/1 → task greys out, shifts to bottom
-  5. Verify weekly parent progress: 1/3 (from completed daily)
-  6. Complete all 3 daily tasks for week → weekly marks complete
-   7. Verify XP: daily taps award leaf XP (small, daily tier). When weekly parent completes (all 3 daily children done), verify one-time parent completion bonus XPTransaction with reason "parent_completion" awards larger XP with weekly tier multiplier. Repeat for monthly completion
+   4. Tap daily task → verify counter becomes 1/1 → task greys out, shifts to bottom. Tap same task again → counter becomes 2/1 (+1) overflow → parent weekly absorbs to 2/3 (max grows from 3 to 4 if needed)
+   5. Verify soft-cap overflow on leaf, parent auto-growth, parent completion bonus fires once at planned threshold
+   6. Continue tapping until longterm root reaches 24/24 (hard cap) → verify all future taps on any child in this tree return `{ locked: true }`, root children grey out and lock
+   7. Verify XP: daily taps award leaf XP. When parent reaches planned max_count, one-time parent completion bonus fires. Over-delivery taps award leaf XP only (no duplicate bonus)
    8. Complete enough to level up → verify level-up overlay triggers
   9. Create standalone recurring daily "Drink 8 glasses" → tap 8 times → task completes → new instance appears tomorrow
   10. Let recurring task expire incomplete → verify "missed" badge, new instance for next day

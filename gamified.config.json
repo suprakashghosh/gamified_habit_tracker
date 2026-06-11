@@ -1,0 +1,15 @@
+{
+  "llm": {
+    "provider": "openai",
+    "model": "gpt-4o"
+  },
+  "xp": {
+    "tier_multipliers": {
+      "daily": 1,
+      "weekly": 5,
+      "monthly": 25,
+      "longterm": 100
+    },
+    "base_xp_per_unit": 5
+  }
+}
