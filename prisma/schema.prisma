@@ -1,0 +1,96 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ──────────────────────────────────────────────
+// Task — the core entity for quests and subtasks
+// ──────────────────────────────────────────────
+model Task {
+  id                  String    @id @default(cuid())
+  title               String
+  description         String?
+  unit                String
+  tier                Tier
+  parent_id           String?
+  parent              Task?     @relation("TaskHierarchy", fields: [parent_id], references: [id], onDelete: Cascade)
+  children            Task[]    @relation("TaskHierarchy")
+  max_count           Int
+  current_count       Int       @default(0)
+  xp_per_unit         Int
+  recurrence_group_id String?
+  period_start        DateTime?
+  period_end          DateTime?
+  is_recurring        Boolean   @default(false)
+  is_published        Boolean   @default(false)
+  sort_order          Int       @default(0)
+  status              Status    @default(draft)
+  expires_at          DateTime?
+  created_at          DateTime  @default(now())
+  completed_at        DateTime?
+
+  xp_transactions XPTransaction[] @relation("SourceTask")
+
+  @@index([tier])
+  @@index([parent_id])
+  @@index([sort_order])
+  @@index([status])
+  @@index([is_published])
+  @@index([recurrence_group_id])
+  @@unique([recurrence_group_id, period_start])
+}
+
+// ──────────────────────────────────────────────
+// XPTransaction — immutable audit log of XP events
+// ──────────────────────────────────────────────
+model XPTransaction {
+  id                    String      @id @default(cuid())
+  amount                Int         // positive for gains, negative for reversals
+  source_task_id        String
+  source_task           Task        @relation("SourceTask", fields: [source_task_id], references: [id], onDelete: Cascade)
+  reason                XPReason
+  linked_transaction_id String?     @unique // points to original txn this one reverses; unique (one undo per original)
+  created_at            DateTime    @default(now())
+
+  @@index([source_task_id])
+  @@index([reason])
+  @@index([created_at])
+}
+
+// ──────────────────────────────────────────────
+// AppState — singleton row for global state (XP, level)
+// ──────────────────────────────────────────────
+model AppState {
+  id            String   @id @default("singleton")
+  total_xp      Int      @default(0)
+  current_level Int      @default(1)
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+}
+
+// ──────────────────────────────────────────────
+// Enums
+// ──────────────────────────────────────────────
+enum Tier {
+  daily
+  weekly
+  monthly
+  longterm
+}
+
+enum Status {
+  draft
+  active
+  completed
+  missed
+}
+
+enum XPReason {
+  leaf_increment
+  parent_completion
+  undo
+  // missed_penalty reserved for future penalty-on-miss feature (see plan R5/R8)
+}

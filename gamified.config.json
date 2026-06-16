@@ -1,7 +1,7 @@
 {
   "llm": {
-    "provider": "openai",
-    "model": "gpt-4o"
+    "provider": "openrouter",
+    "model": "deepseek/deepseek-v4-flash"
   },
   "xp": {
     "tier_multipliers": {

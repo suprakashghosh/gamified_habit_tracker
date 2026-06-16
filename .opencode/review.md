@@ -1,87 +1,74 @@
 # Code Review Summary
 
-**Scope**: Sub-Task 1 — Project Scaffold & Design Tokens (QuestBoard gamified habit tracker)
-**Overall risk**: Low
-**Verdict**: Approve with comments
-
----
-
-## Per-File Pass/Fail
-
-| # | File | Verdict | Issues |
-|---|------|---------|--------|
-| 1 | `src/app/globals.css` | **PASS** | Letter-spacing values from DESIGN.md not embedded (P2) |
-| 2 | `src/app/layout.tsx` | **PASS** | None |
-| 3 | `gamified.config.json` | **PASS** | None |
-| 4 | `src/types/config.ts` | **PASS** | None |
-| 5 | `src/lib/config.ts` | **PASS** | Sync fs blocks event loop (P3) |
-| 6 | `src/middleware.ts` | **PASS** | Colon-in-password parsing (P3); Buffer in Edge (P3) |
-| 7 | `.env.local.example` | **PASS** | None |
-| 8 | `package.json` | **PASS** | None |
-
----
+**Scope**: Sub-Task 8 — Mobile-Responsive Layout & Polish for QuestBoard
+**Overall risk**: Medium
+**Verdict**: Request changes
 
 ## Findings
 
+### [P1] High
+
+- **Active task grid does not follow the required responsive breakpoints**
+  - **Location**: `src/components/QuestBoard.tsx:250-310`
+  - **Why it matters**: The plan requires active tasks to be 1-column on mobile, 2-column on tablet, and 3-column on desktop; completed tasks should be a single column at the bottom. The current implementation renders every task as a single full-width column at all breakpoints (`flex flex-col gap-2`), so tablet/desktop real estate is wasted and the UI diverges from the acceptance criteria.
+  - **Evidence**: `Reorder.Group` and the completed/missed containers all use `flex flex-col gap-2` with no `md:grid-cols-2 lg:grid-cols-3` breakpoints.
+  - **Fix**: Convert active-task containers to a responsive grid and keep completed/missed tasks in a single column. Preserve drag-to-reorder behavior inside the grid, or switch between grid and list layouts per breakpoint.
+
 ### [P2] Medium
 
-#### 1. Typography tokens omit letter-spacing — DESIGN.md tracking values lost
-- **Location**: `src/app/globals.css:43-56`
-- **Why it matters**: DESIGN.md defines aggressive negative tracking as core brand voice: `display-xl` at -2.4px, `display-lg` at -1.28px, `display-md` at -0.96px, `display-sm` at -0.6px, `body-sm`/`body-sm-strong` at -0.28px. The CSS `font` shorthand cannot carry letter-spacing — it only accepts `[font-style] [font-variant] [font-weight] [font-stretch] font-size/line-height font-family`. Consumers of `--font-display-xl` will get correct size/weight/line-height but zero tracking, which DESIGN.md explicitly warns "breaks the brand."
-- **Evidence**: `globals.css:43` defines `--font-display-xl: 600 48px/48px var(--font-geist-sans)` — no tracking. DESIGN.md:446-464 specifies tracking for all display sizes and `body-sm` variants.
-- **Fix**: Either add companion custom properties (e.g., `--tracking-display-xl: -0.05em`) that consumers can reference, or document in a token readme that letter-spacing must be applied via Tailwind utilities (`tracking-*`) separately.
+- **Loading skeleton shape does not mimic the dense horizontal task card**
+  - **Location**: `src/components/LoadingSkeleton.tsx:5-16`
+  - **Why it matters**: The plan states skeletons should mimic the task card shape. `TaskCard` is a dense horizontal rectangle with an icon square, title row, and embedded progress bar, while `LoadingSkeleton` renders 1–3 vertical cards with a large title block and two lines.
+  - **Evidence**: Skeleton uses `grid-cols-1 md:grid-cols-2 lg:grid-cols-3` and three stacked divs of varying widths; it does not include a square placeholder, counter placeholder, or horizontal progress bar placeholder.
+  - **Fix**: Redesign `LoadingSkeleton` to render full-width horizontal placeholders matching `TaskCard`'s three rows (icon square + title/counter + progress bar), and keep the responsive grid only where active tasks will actually use it.
+
+- **Admin table inputs remove focus outlines**
+  - **Location**: `src/components/admin/TaskTable.tsx:128, 137, 146, 153, 169, 179, 188, 221, etc.`
+  - **Why it matters**: The sub-task requires focus-visible rings and no `outline: none`. All admin inputs/selects use `outline-none` and rely solely on a border-color change, which can be hard to see and fails the stated accessibility rule.
+  - **Evidence**: Every editable field uses `className="... outline-none focus:border-[--color-link] ..."`.
+  - **Fix**: Keep the border change but add the shared `focus-ring` class (or an equivalent `focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2`) to every interactive control. Remove `outline-none` so the native outline remains as a fallback.
 
 ### [P3] Low
 
-#### 2. Boilerplate page.tsx carries inert `dark:` Tailwind variants
-- **Location**: `src/app/page.tsx:8,18,37,45`
-- **Why it matters**: The project is light-mode only MVP — no `dark` class is ever applied to `<html>`. These `dark:*` utilities are dead code. They may confuse future devs into thinking dark mode support exists.
-- **Fix**: Remove `dark:invert`, `dark:bg-white/[.06]`, `dark:hover:bg-[#ccc]`, `dark:border-white/[.145]`, `dark:hover:bg-[#1a1a1a]` from the boilerplate. (Full page.tsx replacement is out of scope for Sub-Task 1 anyway.)
+- **Task card aria-label does not match the requested pattern**
+  - **Location**: `src/components/TaskCard.tsx:148`
+  - **Why it matters**: The plan explicitly asks for aria-labels like "Increment [task name] counter". The current label only describes the title and count, so screen-reader users do not know the card is actionable.
+  - **Evidence**: `aria-label={`${optimisticTask.title}: ${optimisticTask.current_count} of ${optimisticTask.max_count}`}`.
+  - **Fix**: Change to `aria-label={`Increment ${optimisticTask.title} counter`}` or similar actionable text.
 
-#### 3. Basic Auth parsing breaks on passwords containing colons
-- **Location**: `src/middleware.ts:34`
-- **Why it matters**: `credentials.split(":")[1]` splits on ALL colons but only takes the second element (`[1]`). If `ADMIN_PASSWORD=abc:def:ghi`, only `def` is captured. A legitimate password with embedded colons would silently fail authentication.
-- **Evidence**: Line 34: `providedPassword = credentials.split(":")[1] || "";` — `"user:abc:def".split(":")` = `["user","abc","def"]`; `[1]` = `"abc"` (missing `":def"`).
-- **Fix**: Use `credentials.slice(credentials.indexOf(":") + 1)` to capture everything after the first colon.
+- **Tab selection uses page semantics instead of tab semantics**
+  - **Location**: `src/components/MobileTabBar.tsx:21-45`, `src/components/QuestBoard.tsx:185-203`, `src/components/QuestBoard.tsx:213-230`
+  - **Why it matters**: `aria-current="page"` is intended for navigation links, not tab controls. The tab bars would be more accessible as a `tablist` with `role="tab"`, `aria-selected`, and an associated `tabpanel`.
+  - **Evidence**: `aria-current={activeTab === key ? "page" : undefined}` on buttons inside a `nav`.
+  - **Fix**: Add `role="tablist"` to the nav container, `role="tab"` and `aria-selected` to each button, and `role="tabpanel"` to the task grid.
 
-#### 4. `Buffer.from` in Edge middleware — non-standard Web API
-- **Location**: `src/middleware.ts:33`
-- **Why it matters**: Next.js middleware runs on Edge runtime. `Buffer` is polyfilled by Next.js and works, but `atob()` is the standard Web API for base64 decoding in Edge/serverless contexts. If this code is ever ported to another Edge platform (Cloudflare Workers, Deno Deploy), `Buffer` will not exist.
-- **Fix**: Replace `Buffer.from(base64Credentials, "base64").toString("utf-8")` with `atob(base64Credentials)`. Not blocking for MVP — Next.js polyfill covers this.
+- **Error retry uses `reset` instead of `router.refresh()`**
+  - **Location**: `src/app/error.tsx:25-30`
+  - **Why it matters**: The plan specifies a retry button calling `router.refresh()`. `reset` only re-renders the error boundary segment; a transient server failure may require a full route refresh to recover.
+  - **Evidence**: `<button onClick={reset}>Try again</button>`.
+  - **Fix**: Import `useRouter` and call `router.refresh()` in the retry handler, or call `refresh()` then `reset()`.
 
-#### 5. Synchronous `fs.readFileSync` in config loader
-- **Location**: `src/lib/config.ts:11`
-- **Why it matters**: Blocks the Node.js event loop on first config read (subsequent reads hit cache). If this module is ever imported in a request handler or Edge runtime path, it will cause problems. For MVP startup-only usage, this is fine — the file is only read once at import time.
-- **Fix**: Consider wrapping in an async function with `fs.promises.readFile` if this module is expected to be used in request-path code. Low priority.
+- **Empty-state copy does not match the requested "No quests for today"**
+  - **Location**: `src/components/QuestBoard.tsx:244-248`
+  - **Why it matters**: The plan specifies the empty-state title "No quests for today". The current title is generic ("No quests yet"), which is less contextually helpful.
+  - **Evidence**: `<EmptyState title="No quests yet" ...>`.
+  - **Fix**: Pass `title="No quests for today"`.
 
----
+## Positives
 
-## Checklist Verification
-
-| Criterion | Status |
-|-----------|--------|
-| DESIGN.md color tokens correctly mapped to CSS custom properties | ✓ All 36 colors match |
-| DESIGN.md typography tokens mapped (size/weight/line-height/family) | ✓ All values match |
-| DESIGN.md spacing tokens mapped | ✓ All 12 spacing tokens match |
-| DESIGN.md radius tokens mapped | ✓ All 9 radius tokens match |
-| DESIGN.md shadow tokens mapped | ✓ All 5 shadow levels match (L1-L5) |
-| No dark mode (light only for MVP) | ✓ No `@media (prefers-color-scheme: dark)` or `.dark` rules |
-| Geist fonts via `next/font/google` (not CDN) | ✓ Both Geist and Geist_Mono imported from `next/font/google` |
-| `sonner` Toaster in layout | ✓ `<Toaster />` rendered in RootLayout body |
-| `gamified.config.json` matches `AppConfigSchema` | ✓ All fields validate against zod schema |
-| Middleware protects `/admin` without blocking `/`, `/api`, static assets | ✓ Matcher excludes api/_next/image/_next/static/favicon; `/` passes through with `NextResponse.next()` |
-| Basic auth (base64) and Bearer token both supported | ✓ Both branches implemented |
-| `.env.local.example` has all required vars | ✓ DATABASE_URL, DIRECT_URL, LLM_API_KEY, ADMIN_PASSWORD |
-| `package.json` has all required deps | ✓ prisma, framer-motion, ai, zod, sonner, lucide-react, @ai-sdk/openai, @supabase/supabase-js, tailwindcss v4 |
-| No UI components, no DB schema, no server actions | ✓ All scope-compliant — only scaffold files |
-| Build passes (per executor) | ✓ Verified |
-
----
+- Dark sci-fi game theme is applied via `dark-game` on the game routes, while admin loading/error remain light-themed.
+- `TaskCard` implements dense horizontal cards with embedded progress bars and tier icon squares.
+- Desktop sidebar contains `XPHUD` and category pills; mobile uses the bottom `MobileTabBar` and hides the sidebar.
+- `loading.tsx`, `error.tsx`, and `not-found.tsx` exist in both `app/` and `app/admin/`.
+- `EmptyState` provides icon, title, description, and optional CTA.
+- Design tokens are used consistently across game UI components.
+- `npx eslint .` exits 0 and `npx tsc --noEmit` / `npx next build` all pass.
+- Admin table wraps the table in `overflow-x-auto`, satisfying the mobile horizontal-scroll requirement.
 
 ## Suggested Next Steps
 
-- [ ] Add letter-spacing companion tokens (or docs note) — P2
-- [ ] Fix colon-in-password Basic Auth parsing — P3
-- [ ] Remove inert `dark:` utilities from boilerplate page.tsx — P3
-- [ ] (Optional) Replace `Buffer.from` with `atob()` in middleware for portability — P3
-- [ ] (Optional) Add unit test for middleware auth parsing edge cases (colon in password, empty password, missing header)
+- [ ] Fix the active-task responsive grid in `QuestBoard.tsx` before merging.
+- [ ] Update `LoadingSkeleton.tsx` to match the horizontal `TaskCard` shape.
+- [ ] Restore focus-visible rings on admin table inputs/selects in `TaskTable.tsx`.
+- [ ] Improve tab semantics and `aria-label`s for screen-reader clarity.
+- [ ] Re-run ESLint, type-check, and build after changes.

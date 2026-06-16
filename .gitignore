@@ -23,6 +23,8 @@
 # misc
 .DS_Store
 *.pem
+*.png
+/RainShift
 
 # debug
 npm-debug.log*

@@ -26,7 +26,7 @@ Quest-board habit tracker. Converts raw to-do lists into structured, gamified ta
 - Node.js 20+
 - npm
 - Supabase project (PostgreSQL)
-- LLM API key (OpenAI-compatible)
+- OpenRouter API key
 
 ### Environment
 
@@ -35,7 +35,7 @@ Create `.env.local`:
 ```env
 DATABASE_URL="postgresql://user:pass@host:6543/db?pgbouncer=true"
 DIRECT_URL="postgresql://user:pass@host:5432/db"
-LLM_API_KEY="sk-..."
+OPENROUTER_API_KEY="sk-or-v1-..."
 ADMIN_PASSWORD="your-admin-password"
 ```
 
@@ -43,7 +43,7 @@ ADMIN_PASSWORD="your-admin-password"
 |----------|---------|
 | `DATABASE_URL` | Pooled connection (Supavisor / PgBouncer) for normal operations |
 | `DIRECT_URL` | Direct connection for Prisma migrations (`prisma migrate deploy`) |
-| `LLM_API_KEY` | API key for LLM provider (OpenAI-compatible) |
+| `OPENROUTER_API_KEY` | API key for OpenRouter (model gateway) |
 | `ADMIN_PASSWORD` | Password to access `/admin` routes and mutation Server Actions |
 
 ### Install and Run

@@ -1,7 +1,14 @@
 @import "tailwindcss";
 
+/* ── Font-display utility ── */
+.font-display {
+  font-family: var(--font-display);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
 @theme inline {
-  /* Colors */
+  /* Colors — root is light (used by admin route) */
   --color-primary: #171717;
   --color-on-primary: #ffffff;
   --color-ink: #171717;
@@ -12,6 +19,7 @@
   --color-canvas: #ffffff;
   --color-canvas-soft: #fafafa;
   --color-canvas-soft-2: #f5f5f5;
+  --color-surface: #ffffff;
   --color-link: #0070f3;
   --color-link-deep: #0761d1;
   --color-link-bg-soft: #d3e5ff;
@@ -38,6 +46,23 @@
   --color-gradient-ship-end: #f9cb28;
   --color-selection-bg: #171717;
   --color-selection-fg: #f2f2f2;
+
+  /* RainShift game theme color tokens (utilities available everywhere, overridden in .dark-game) */
+  --color-game-bg-main: #131519;
+  --color-game-bg-panel: #1e2129;
+  --color-game-bg-header: #2a2e38;
+  --color-game-text-main: #e3e0d6;
+  --color-game-text-muted: #8f9aa8;
+  --color-game-text-dim: #5a6370;
+  --color-game-border: #3e4656;
+  --color-game-border-highlight: #6c7b95;
+  --color-game-common: #c8c8c8;
+  --color-game-uncommon: #95c561;
+  --color-game-legendary: #d95f5f;
+  --color-game-boss: #e5c966;
+  --color-game-lunar: #8da6e8;
+  --color-game-void: #b17bd9;
+  --color-game-equipment: #ff9600;
 
   /* Typography — font shorthand tokens */
   --font-display-xl: 600 48px/48px var(--font-geist-sans);
@@ -103,15 +128,84 @@
   --foreground: var(--color-ink);
 }
 
+/* ── Dark sci-fi game theme ── */
+.dark-game {
+  --color-canvas: #0a0a0a;
+  --color-canvas-soft: #0d0d0d;
+  --color-canvas-soft-2: #141414;
+  --color-surface: #161616;
+  --color-ink: #e5e5e5;
+  --color-body: #a3a3a3;
+  --color-mute: #666666;
+  --color-hairline: #262626;
+  --color-hairline-strong: #404040;
+  --color-primary: #a78bfa;
+  --color-on-primary: #0a0a0a;
+  --color-link: #60a5fa;
+  --color-link-deep: #3b82f6;
+  --color-link-bg-soft: #1e3a5f;
+  --color-success: #3b82f6;
+  --color-error: #ef4444;
+  --color-error-soft: #451111;
+  --color-error-deep: #dc2626;
+  --color-selection-bg: #a78bfa;
+  --color-selection-fg: #0a0a0a;
+
+  /* Shadows tighter on dark */
+  --shadow-L1: 0 0 0 1px #ffffff0a inset;
+  --shadow-L2: 0px 1px 1px #00000014, 0px 2px 2px #0000001a, 0 0 0 1px #ffffff0a inset;
+  --shadow-L3: 0px 2px 2px #0000001a, 0px 8px 8px -8px #0000001a, 0 0 0 1px #ffffff0a inset;
+  --shadow-L4: 0px 2px 2px #0000001a, 0px 8px 16px -4px #0000001a, 0 0 0 1px #ffffff0a inset;
+  --shadow-L5: 0px 1px 1px #00000014, 0px 8px 16px -4px #0000001a, 0px 24px 32px -8px #00000024, 0 0 0 1px #ffffff0a inset;
+
+  --background: var(--color-canvas-soft);
+  --foreground: var(--color-ink);
+
+  /* RainShift game color overrides */
+  --font-display: 'Orbitron', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+  --color-game-bg-main: #131519;
+  --color-game-bg-panel: #1e2129;
+  --color-game-bg-header: #2a2e38;
+  --color-game-text-main: #e3e0d6;
+  --color-game-text-muted: #8f9aa8;
+  --color-game-text-dim: #5a6370;
+  --color-game-border: #3e4656;
+  --color-game-border-highlight: #6c7b95;
+  --color-game-common: #c8c8c8;
+  --color-game-uncommon: #95c561;
+  --color-game-legendary: #d95f5f;
+  --color-game-boss: #e5c966;
+  --color-game-lunar: #8da6e8;
+  --color-game-void: #b17bd9;
+  --color-game-equipment: #ff9600;
+
+  background: var(--background);
+  color: var(--foreground);
+}
+
 ::selection {
   background-color: var(--color-selection-bg);
   color: var(--color-selection-fg);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* Utility: focus ring for interactive elements */
+.focus-ring {
+  @apply focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:outline-none;
+}
+
+/* RainShift game card utility */
+.game-card {
+  background: var(--color-game-bg-panel);
+  border: 1px solid var(--color-game-border);
+  transition: border-color 0.2s ease;
+}
+.game-card:hover {
+  border-color: var(--color-game-border-highlight);
 }

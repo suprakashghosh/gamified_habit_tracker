@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 export const LLMConfigSchema = z.object({
-  provider: z.enum(["openai"]).default("openai"),
+  provider: z.enum(["openrouter"]).default("openrouter"),
   model: z.string().default("gpt-4o"),
 });
 

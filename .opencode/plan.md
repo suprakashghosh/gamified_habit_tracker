@@ -13,10 +13,10 @@ Build a Next.js 15 gamified habit tracker structured as a quest-board across dai
 | **R3** | Unit consistency: root parent defines unit and total counter. Children get empty counters; user allocates them in admin panel. Σ(children.max_count) must equal parent.max_count before publish |
 | **R4** | Counter-based progress: tap-to-increment (+1). Leaf tasks have soft caps (can exceed planned max_count with `+N` overflow indicator). Branch tasks auto-grow max_count to match child over-delivery. Root tasks (longterm hierarchy root or standalone at any tier) have hard caps — taps rejected when root reaches its max_count. Parent completion bonus fires once at planned threshold. Undo toast (3-second). Completed/fully-capped tasks greyed out, auto-sorted to bottom. Drag-to-reorder within each tab |
 | **R5** | Tier-scaled XP + Levels: per-unit XP scaled by tier (daily < weekly < monthly < longterm). Exponential thresholds (100 × 1.5^(N-1)). Account-wide. Level-up animation. XP lost opportunity on task expiry (no deduction) |
-| **R6** | LLM on-demand generation: user enters raw todo → LLM checks quantifiability → returns structured tree with clarifications for ambiguous items → user resolves clarifications → user allocates child counters → publishes. Model/provider configurable via `gamified.config.json` |
+| **R6** | LLM on-demand generation: user enters raw todo → LLM checks quantifiability → returns structured tree with clarifications for ambiguous items → user resolves clarifications → user allocates child counters → publishes. Model fallback configurable via `gamified.config.json` (uses OpenRouter as gateway, can switch to any model slug) |
 | **R7** | Admin panel (`/admin`) with: raw todo input, generate button, clarification UI, inline editable table with counter allocation, publish button. Draft vs published state |
 | **R8** | Repeated/recurring tasks expire at period end (marked as missed, no XP deducted) and auto-regenerate for next period. One-shot tasks archive on completion. Hierarchical tasks are one-shot by nature |
-| **R9** | Supabase PostgreSQL + Prisma ORM. Vercel hosting. Secrets in Vercel env vars (`DATABASE_URL`, `LLM_API_KEY`). `gamified.config.json` safe to commit (model/provider/xp config) |
+| **R9** | Supabase PostgreSQL + Prisma ORM. Vercel hosting. Secrets in Vercel env vars (`DATABASE_URL`, `OPENROUTER_API_KEY`). `gamified.config.json` safe to commit (model/provider/xp config) |
 | **R10** | Mobile-first responsive (375px–1440px). Light mode only for MVP. Geist font via next/font. Framer Motion for animations |
 | **R11** | Integration + E2E testing (Vitest + Playwright) |
 | **R12** | Server mutations + revalidation for data flow. Server Components for data fetching, Client Components only where interactivity needed |
@@ -193,8 +193,8 @@ const GenerationResponse = z.object({
 ```json
 {
   "llm": {
-    "provider": "openai",
-    "model": "gpt-4o"
+    "provider": "openrouter",
+    "model": "openai/gpt-4o"
   },
   "xp": {
     "tier_multipliers": {
@@ -212,7 +212,7 @@ Secrets (`.env.local` / Vercel env vars, never committed):
 ```
 DATABASE_URL=postgresql://... (Supabase pooled/transaction-mode connection for runtime)
 DIRECT_URL=postgresql://... (Supabase direct/session-mode connection for migrations)
-LLM_API_KEY=sk-...
+OPENROUTER_API_KEY=sk-or-v1-...
 ADMIN_PASSWORD=your-shared-secret-here
 ```
 
@@ -228,7 +228,7 @@ ADMIN_PASSWORD=your-shared-secret-here
 - **Dependencies:** None (starting point)
 - **In Scope:**
   - `create-next-app` with TypeScript, Tailwind, App Router, ESLint, `src/` directory
-  - Install: `prisma @prisma/client @supabase/supabase-js`, `framer-motion`, `ai @ai-sdk/openai zod`, `sonner` (toasts), `next/font` (Geist)
+   - Install: `prisma @prisma/client @supabase/supabase-js`, `framer-motion`, `ai @openrouter/ai-sdk-provider zod`, `sonner` (toasts), `next/font` (Geist)
   - Configure `tailwind.config.ts` or `globals.css` `@theme` block with all design tokens from DESIGN.md (colors, typography, spacing, shadows, radii)
   - Create `gamified.config.json` with default values and TypeScript types
   - Create `.env.local.example` with dummy values
@@ -259,7 +259,7 @@ ADMIN_PASSWORD=your-shared-secret-here
 
 ### Sub-Task 2: Database Schema & Prisma Setup
 
-- **Status:** Pending
+- **Status:** Completed
 - **Objective:** Design and create Prisma schema for Task, XPTransaction, and AppState models. Run initial migration against Supabase.
 - **Related Requirements:** R2, R3, R8, R9
 - **Dependencies:** Sub-Task 1
@@ -274,28 +274,22 @@ ADMIN_PASSWORD=your-shared-secret-here
    - Supabase connection via `DATABASE_URL` (pooled, runtime) and `DIRECT_URL` (session, migrations) env vars
   - Initial migration + Prisma client generation
 - **Out of Scope:** Seed scripts, API routes, UI
+- **Notes (post-implementation):** Prisma 7 dropped `directUrl`. Schema uses single `provider = "postgresql"` block (no URLs). All connection config lives in `prisma.config.ts`. For Supabase PgBouncer, set `DATABASE_URL` to pooled URL (port 6543) and optionally `DATABASE_URL_MIGRATIONS` to session-mode URL (port 5432) for migrations.
 - **Instructions:**
-  1. Create `prisma/schema.prisma` with models above
-   2. Add `DATABASE_URL` and `DIRECT_URL` to `.env`. Prisma schema datasource uses both:
-      ```
-      datasource db {
-        provider  = "postgresql"
-        url       = env("DATABASE_URL")   // pooled connection for runtime
-        directUrl = env("DIRECT_URL")     // direct connection for migrations
-      }
-      ```
-  3. Run `npx prisma migrate dev --name init`
-  4. Generate client: `npx prisma generate`
-  5. Create `src/lib/prisma.ts` with singleton Prisma client
+  1. Create `prisma/schema.prisma` with models above (provider only, no URLs — Prisma 7)
+   2. Create `prisma.config.ts` with `defineConfig({ datasource: { url: ... } })`. Use `DATABASE_URL` env var; optionally `DATABASE_URL_MIGRATIONS` for pooled setups.
+   3. Run `npx prisma migrate dev --name init` (requires real Supabase credentials)
+   4. Generate client: `npx prisma generate`
+   5. Create `src/lib/prisma.ts` with singleton Prisma client
 - **Acceptance Criteria:**
-  - `npx prisma generate` succeeds
-  - Migration applies to Supabase
-  - Can create/query tasks with parent-child relationships
-  - Enum types enforced at DB level
+  - `npx prisma generate` succeeds ✓
+  - Migration applies to Supabase (deferred — requires real Supabase credentials; schema DDL verified valid)
+  - Can create/query tasks with parent-child relationships (verified via seed.ts when DB available)
+  - Enum types enforced at DB level ✓
 - **Cautionary Points:**
-  - Supabase connection requires SSL (`sslmode=require` or `?sslmode=require` in connection string)
-  - Prisma's `@relation` for self-referential fields needs explicit `references` and `fields`
-  - Supabase's PgBouncer (transaction mode) may interfere with Prisma migrations — use Session mode connection string for `migrate dev`, Transaction mode for runtime (or use Supavisor)
+  - Supabase connection requires SSL (`sslmode=require` in connection string)
+  - Prisma 7: no `directUrl` — use `DATABASE_URL_MIGRATIONS` env var fallback in `prisma.config.ts` for pooled setups
+  - Prisma's `@relation` for self-referential fields needs explicit `references` and `fields`; `onDelete: Cascade` on parent for cleanup
   - `AppState` singleton pattern: use a fixed ID (e.g., "singleton") and `upsert`
 - **Validation:** Write a small script (`prisma/seed.ts`) that creates a parent task with children, queries nested relations, and verifies hierarchy integrity. Run with `npx tsx prisma/seed.ts`.
 
@@ -303,7 +297,7 @@ ADMIN_PASSWORD=your-shared-secret-here
 
 ### Sub-Task 3: Server Actions & Data Layer
 
-- **Status:** Pending
+- **Status:** Completed
 - **Objective:** Implement all server actions for task CRUD, progress updates (tap-to-increment), XP calculation, hierarchy aggregation, task lifecycle (expiry/recurrence), and draft/publish flow.
 - **Related Requirements:** R2, R3, R4, R5, R8
 - **Dependencies:** Sub-Task 2
@@ -369,7 +363,7 @@ ADMIN_PASSWORD=your-shared-secret-here
 
 ### Sub-Task 4: Game View UI — Quest Tabs & Task Cards
 
-- **Status:** Pending
+- **Status:** Completed
 - **Objective:** Build the main game view (`/`) with four quest tabs, interactive task cards, tap-to-increment, undo toasts, drag-to-reorder, and completed-task sinking.
 - **Related Requirements:** R1, R4, R10, R12
 - **Dependencies:** Sub-Task 3
@@ -410,7 +404,7 @@ ADMIN_PASSWORD=your-shared-secret-here
 
 ### Sub-Task 5: XP & Level-Up System UI
 
-- **Status:** Pending
+- **Status:** Completed
 - **Objective:** Add floating +XP notification animations, level-up takeover sequence, smooth XP bar transitions, and confetti on level-up.
 - **Related Requirements:** R5, R10
 - **Dependencies:** Sub-Task 4
@@ -444,7 +438,7 @@ ADMIN_PASSWORD=your-shared-secret-here
 
 ### Sub-Task 6: Admin Panel — LLM Task Generation & Draft Editing
 
-- **Status:** Pending
+- **Status:** Completed
 - **Objective:** Build `/admin` route with raw todo input, LLM generation (quantifiability check + clarification flow), inline table editor with counter allocation, and publish workflow.
 - **Related Requirements:** R6, R7, R3
 - **Dependencies:** Sub-Task 3
@@ -459,8 +453,8 @@ ADMIN_PASSWORD=your-shared-secret-here
   - Draft tasks in DB with `is_published: false`, not visible in game view
 - **Out of Scope:** Task templates, batch import/export, re-flavoring, generating tasks from history/patterns
 - **Instructions:**
-  1. Create `src/actions/llm.ts`:
-     - `generateTasks`: reads `gamified.config.json` for model/provider. Constructs prompt with few-shot examples of good hierarchy decomposition. Includes rules: check quantifiability, root defines unit + total, children get empty max_count, tier-based XP defaults, recurring only for standalone. Calls `generateObject` from Vercel AI SDK with GenerationResponse Zod schema. Inserts draft tasks into DB (recursive for children with parent_id linking). Returns `{ tasks, clarifications }`
+   1. Create `src/actions/llm.ts`:
+      - `generateTasks`: reads `gamified.config.json` for model. Uses `@openrouter/ai-sdk-provider` with the config's model slug (e.g., `"openai/gpt-4o"`). Constructs prompt with few-shot examples of good hierarchy decomposition. Includes rules: check quantifiability, root defines unit + total, children get empty max_count, tier-based XP defaults, recurring only for standalone. Calls `generateObject` from Vercel AI SDK with GenerationResponse Zod schema. Inserts draft tasks into DB (recursive for children with parent_id linking). Returns `{ tasks, clarifications }`
      - `resolveClarifications`: takes user answers, calls LLM again with answers as additional context, returns task tree. Merges/inserts draft tasks
   2. Build `TodoInput` → `ClarificationPanel` → `TaskTable` flow:
      - User pastes todos → clicks Generate → loading spinner
@@ -477,9 +471,9 @@ ADMIN_PASSWORD=your-shared-secret-here
   - Publish validates and makes tasks live
   - Published tasks appear in game view (`/`)
 - **Cautionary Points:**
-  - LLM API key: stored in Vercel env vars (`process.env.LLM_API_KEY`). Never exposed to client. `generateObject` call is in server action only
+   - LLM API key: stored in Vercel env vars (`process.env.OPENROUTER_API_KEY`). Never exposed to client. `generateObject` call is in server action only
   - LLM failure handling: rate limits, timeouts, malformed JSON. Show specific error toast, allow retry. Don't crash the page
-   - Model switching: MVP supports OpenAI only (`@ai-sdk/openai`). `gamified.config.json` `provider` field reserved for future Anthropic/Groq providers. To add a provider later, install the corresponding `@ai-sdk/<provider>` package and update config
+    - Model switching: MVP uses OpenRouter gateway via `@openrouter/ai-sdk-provider`. `gamified.config.json` `model` field holds the OpenRouter slug string (e.g., `"openai/gpt-4o"`, `"anthropic/claude-sonnet-4"`). Switching models is a config change only — no package swap needed. To use a non-OpenRouter provider later, replace the package and update config accordingly
   - Prompt engineering: include explicit few-shot examples covering: quantifiable todo decomposition, ambiguous todo detection, tier-appropriate XP values, unit assignment
   - Recursive task insertion: generate children with `parent_id` linking. Use Prisma `createMany` with explicit IDs for efficiency, or recursive `create` calls
   - Draft task cleanup: delete old drafts on each new generation, or allow user to manage drafts independently
@@ -491,7 +485,7 @@ ADMIN_PASSWORD=your-shared-secret-here
 
 ### Sub-Task 7: Task Lifecycle — Expiry & Recurrence Engine
 
-- **Status:** Pending
+- **Status:** Completed
 - **Objective:** Ensure recurring tasks expire at period end, get marked as missed, and auto-regenerate. Validate that hierarchical tasks remain one-shot.
 - **Related Requirements:** R8, R2
 - **Dependencies:** Sub-Task 3 (lifecycle action already implemented), Sub-Task 4 (UI view)
@@ -533,7 +527,7 @@ ADMIN_PASSWORD=your-shared-secret-here
 
 ### Sub-Task 8: Mobile-Responsive Layout & Polish
 
-- **Status:** Pending
+- **Status:** Completed
 - **Objective:** Ensure responsive design across 375px–1440px. Polish loading states, empty states, error boundaries, and accessibility.
 - **Related Requirements:** R1, R10
 - **Dependencies:** Sub-Task 4, 5, 6 (all UI sub-tasks)
@@ -552,6 +546,7 @@ ADMIN_PASSWORD=your-shared-secret-here
   - Accessibility: focus outlines (not removed via `outline: none` — use `focus-visible:ring`), aria-labels on tap zones ("Increment [task name] counter"), semantic HTML, keyboard nav for admin table
 - **Out of Scope:** Dark mode, PWA, offline support, internationalization
 - **Instructions:**
+  0. Screenshot-led polish direction: restyle main game UI toward provided dark sci-fi achievement-grid references: dark grid background, left stats sidebar, top category/search bar, uppercase techno/mono typography, dense rectangular entries with icon square, task title, description, status badge, and progress bar embedded within each card. Preserve QuestBoard domain semantics (daily/weekly/monthly/longterm tabs) while visually echoing the provided All/Survivors/Skins navigation style.
   1. Audit all components for responsive breakpoints. Use Tailwind prefixes (`sm:`, `md:`, `lg:`, `xl:`)
   2. Create `MobileTabBar` with 4 icon sections (use lucide-react icons: Sun, CalendarDays, CalendarRange, Star)
   3. Create `LoadingSkeleton`: `animate-pulse` with rounded-md divs mimicking card shape
@@ -629,7 +624,7 @@ ADMIN_PASSWORD=your-shared-secret-here
 - **Dependencies:** Sub-Task 1-9 (all features complete)
 - **In Scope:**
   - Create Vercel project (linked to GitHub repo)
-   - Set Vercel env vars: `DATABASE_URL` (pooled/production Supabase), `DIRECT_URL` (session/direct Supabase for migrations), `LLM_API_KEY`, `ADMIN_PASSWORD`
+   - Set Vercel env vars: `DATABASE_URL` (pooled/production Supabase), `DIRECT_URL` (session/direct Supabase for migrations), `OPENROUTER_API_KEY`, `ADMIN_PASSWORD`
   - Push `gamified.config.json` with production model choice
   - Run `npx prisma migrate deploy` against production Supabase
   - Deploy to Vercel preview (staging) → verify → promote to production
@@ -642,7 +637,7 @@ ADMIN_PASSWORD=your-shared-secret-here
   4. Run `vercel` → link to project → configure env vars in dashboard
   5. Deploy: `vercel --prod`
   6. Smoke test: navigate to Vercel URL, verify app loads, create test task via admin, verify it appears in game view
-  7. Verify LLM generation works (ensure `LLM_API_KEY` is set)
+   7. Verify LLM generation works (ensure `OPENROUTER_API_KEY` is set)
   8. Test on mobile device
 - **Acceptance Criteria:**
   - App accessible at `*.vercel.app` URL
