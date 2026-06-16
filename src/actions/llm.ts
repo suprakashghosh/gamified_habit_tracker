@@ -11,7 +11,7 @@ import type { Tier } from "@prisma/client";
 
 const TaskDraftSchema: z.ZodType<TaskDraft> = z.object({
   title: z.string().describe("Short, gamified task title"),
-  description: z.string().optional().describe("Brief description of what this task involves"),
+  description: z.string().describe("One-sentence flavorful description of what this task involves"),
   unit: z.string().describe("Measurement unit (e.g., 'pages', 'glasses', 'km', 'chapters')"),
   tier: z.enum(["daily", "weekly", "monthly", "longterm"]),
   max_count: z.number().int().nonnegative().describe("Total count target. 0 for children that need allocation"),
@@ -22,7 +22,7 @@ const TaskDraftSchema: z.ZodType<TaskDraft> = z.object({
 
 type TaskDraft = {
   title: string;
-  description?: string;
+  description: string;
   unit: string;
   tier: Tier;
   max_count: number;
@@ -114,14 +114,15 @@ function buildSystemPrompt(): string {
     `{`,
     `  "tasks": [{`,
     `    "title": "Read The Pragmatic Programmer",`,
+    `    "description": "Read the full book cover-to-cover in two monthly chunks",`,
     `    "unit": "chapters",`,
     `    "tier": "longterm",`,
     `    "max_count": 24,`,
     `    "xp_per_unit": 300,`,
     `    "is_recurring": false,`,
     `    "children": [`,
-    `      {"title": "Read 12 chapters (first half)", "unit": "chapters", "tier": "monthly", "max_count": 12, "xp_per_unit": 100, "is_recurring": false},`,
-    `      {"title": "Read 12 chapters (second half)", "unit": "chapters", "tier": "monthly", "max_count": 12, "xp_per_unit": 100, "is_recurring": false}`,
+    `      {"title": "Read 12 chapters (first half)", "description": "Complete the first half of the book", "unit": "chapters", "tier": "monthly", "max_count": 12, "xp_per_unit": 100, "is_recurring": false},`,
+    `      {"title": "Read 12 chapters (second half)", "description": "Complete the second half of the book", "unit": "chapters", "tier": "monthly", "max_count": 12, "xp_per_unit": 100, "is_recurring": false}`,
     `    ]`,
     `  }],`,
     `  "clarifications": []`,
@@ -132,6 +133,7 @@ function buildSystemPrompt(): string {
     `{`,
     `  "tasks": [{`,
     `    "title": "Drink 8 glasses of water",`,
+    `    "description": "Stay hydrated by drinking enough water daily",`,
     `    "unit": "glasses",`,
     `    "tier": "daily",`,
     `    "max_count": 8,`,

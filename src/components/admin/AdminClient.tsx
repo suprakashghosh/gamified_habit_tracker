@@ -3,7 +3,7 @@
 import { useState, useMemo, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { ArrowLeft, Loader2 } from "lucide-react";
+import { ArrowLeft, Loader2, MessageSquare, Database } from "lucide-react";
 import Link from "next/link";
 import { generateTasks, resolveClarifications, type DraftTask, type ClarificationFromLLM } from "@/actions/llm";
 import { createTask, updateTask, deleteTask, allocateChildCounters, publishTasks } from "@/actions/tasks";
@@ -11,6 +11,8 @@ import { TodoInput } from "./TodoInput";
 import { ClarificationPanel } from "./ClarificationPanel";
 import { TaskTable } from "./TaskTable";
 import { PublishButton } from "./PublishButton";
+import { AdminSidebar } from "./AdminSidebar";
+import { DatabaseEditorPlaceholder } from "./DatabaseEditorPlaceholder";
 import type { Tier } from "@prisma/client";
 
 type Phase = "idle" | "generating" | "clarifying" | "editing";
@@ -47,6 +49,7 @@ function flattenIds(tasks: DraftTask[]): string[] {
 
 export function AdminClient({ draftTasks }: AdminClientProps) {
   const router = useRouter();
+  const [activeTab, setActiveTab] = useState<"chat" | "editor">("chat");
   const [phase, setPhase] = useState<Phase>(draftTasks.length > 0 ? "editing" : "idle");
   const [tasks, setTasks] = useState<DraftTask[]>(draftTasks);
   const [clarifications, setClarifications] = useState<ClarificationFromLLM[]>([]);
@@ -283,51 +286,89 @@ export function AdminClient({ draftTasks }: AdminClientProps) {
         </div>
       </header>
 
-      <section className="flex-1 px-4 py-6 md:px-8 md:py-8">
-        <div className="mx-auto w-full max-w-7xl">
-          {phase === "idle" && (
-            <TodoInput onGenerate={handleGenerate} isLoading={false} />
-          )}
+      {/* Mobile horizontal tab bar */}
+      <div className="md:hidden flex border-b border-game-border bg-game-bg-header">
+        <button
+          onClick={() => setActiveTab("chat")}
+          className={[
+            "flex-1 flex items-center justify-center gap-2 h-10 text-[11px] uppercase tracking-wider transition-colors focus-ring",
+            activeTab === "chat"
+              ? "bg-game-text-muted/15 text-game-text-main border-b-2 border-game-text-muted/20"
+              : "text-game-text-dim hover:text-game-text-muted",
+          ].join(" ")}
+        >
+          <MessageSquare className="w-4 h-4" />
+          Chat
+        </button>
+        <button
+          onClick={() => setActiveTab("editor")}
+          className={[
+            "flex-1 flex items-center justify-center gap-2 h-10 text-[11px] uppercase tracking-wider transition-colors focus-ring",
+            activeTab === "editor"
+              ? "bg-game-text-muted/15 text-game-text-main border-b-2 border-game-text-muted/20"
+              : "text-game-text-dim hover:text-game-text-muted",
+          ].join(" ")}
+        >
+          <Database className="w-4 h-4" />
+          Editor
+        </button>
+      </div>
 
-          {phase === "generating" && (
-            <div className="flex flex-col items-center justify-center gap-[--spacing-md] py-[--spacing-4xl]">
-              <Loader2 className="h-10 w-10 animate-spin text-game-lunar" />
-              <p className="text-base text-game-text-muted">Summoning the quest smith...</p>
-            </div>
-          )}
+      <div className="flex flex-1 flex-col md:flex-row">
+        <AdminSidebar activeTab={activeTab} onTabChange={setActiveTab} />
 
-          {phase === "clarifying" && (
-            <ClarificationPanel
-              clarifications={clarifications}
-              onResolve={handleResolve}
-              isLoading={false}
-            />
-          )}
+        <section className="flex-1 px-4 py-6 md:px-8 md:py-8">
+          <div className="mx-auto w-full max-w-7xl">
+            {activeTab === "chat" && (
+              <>
+                {phase === "idle" && (
+                  <TodoInput onGenerate={handleGenerate} isLoading={false} />
+                )}
 
-          {phase === "editing" && (
-            <div className="flex flex-col gap-[--spacing-xl]">
-              <TodoInput onGenerate={handleGenerate} isLoading={false} />
-              <TaskTable
-                tasks={tasks}
-                onUpdateTask={handleUpdateTask}
-                onUpdateTaskBlur={flushUpdateTask}
-                onDeleteTask={handleDeleteTask}
-                onAddTask={handleAddTask}
-                onAddChild={handleAddChild}
-                onAllocateChildCounters={handleAllocateChildCounters}
-              />
-              {tasks.length > 0 && (
-                <div className="flex justify-end">
-                  <PublishButton
-                    onPublish={handlePublish}
-                    isLoading={isPublishing}
+                {phase === "generating" && (
+                  <div className="flex flex-col items-center justify-center gap-[--spacing-md] py-[--spacing-4xl]">
+                    <Loader2 className="h-10 w-10 animate-spin text-game-lunar" />
+                    <p className="text-base text-game-text-muted">Summoning the quest smith...</p>
+                  </div>
+                )}
+
+                {phase === "clarifying" && (
+                  <ClarificationPanel
+                    clarifications={clarifications}
+                    onResolve={handleResolve}
+                    isLoading={false}
                   />
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </section>
+                )}
+
+                {phase === "editing" && (
+                  <div className="flex flex-col gap-[--spacing-xl]">
+                    <TodoInput onGenerate={handleGenerate} isLoading={false} />
+                    <TaskTable
+                      tasks={tasks}
+                      onUpdateTask={handleUpdateTask}
+                      onUpdateTaskBlur={flushUpdateTask}
+                      onDeleteTask={handleDeleteTask}
+                      onAddTask={handleAddTask}
+                      onAddChild={handleAddChild}
+                      onAllocateChildCounters={handleAllocateChildCounters}
+                    />
+                    {tasks.length > 0 && (
+                      <div className="flex justify-end">
+                        <PublishButton
+                          onPublish={handlePublish}
+                          isLoading={isPublishing}
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+
+            {activeTab === "editor" && <DatabaseEditorPlaceholder />}
+          </div>
+        </section>
+      </div>
     </main>
   );
 }

@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useTransition } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
+import Link from "next/link";
 import { Reorder, AnimatePresence, motion } from "framer-motion";
 import { incrementProgress, decrementProgress, reorderTasks } from "@/actions/tasks";
 import { XPHUD } from "@/components/XPHUD";
@@ -342,29 +343,21 @@ function QuestBoardContent({
 
       {/* ── Main Content ── */}
       <div className="relative z-10 flex-1 min-w-0 flex flex-col">
-        {/* Sticky top filter bar (desktop) */}
-        <header className="hidden md:flex items-center gap-1 px-4 py-3 border-b border-game-border bg-game-bg-main/95 backdrop-blur-md shadow-lg sticky top-0 z-20">
-          {TABS.map(({ key, label }) => (
-            <button
-              key={key}
-              role="tab"
-              aria-selected={activeTab === key}
-              onClick={() => handleTabChange(key)}
-              className={[
-                "px-3 py-1.5 rounded-sm text-[10px] uppercase tracking-wider transition-all duration-150 focus-ring",
-                activeTab === key
-                  ? "bg-game-text-muted text-game-bg-main font-bold border border-game-text-muted"
-                  : "bg-transparent text-game-text-muted border border-transparent hover:border-game-text-dim hover:bg-game-bg-panel",
-              ].join(" ")}
-              aria-label={`Show ${label} quests`}
-            >
-              {label.toUpperCase()}
-            </button>
-          ))}
+        {/* Sticky header with page indicator & admin link */}
+        <header className="flex items-center justify-between px-4 py-3 border-b border-game-border bg-game-bg-main/95 backdrop-blur-md sticky top-0 z-20">
+          <span className="font-display text-sm tracking-wider text-game-text-main">
+            Quests
+          </span>
+          <Link
+            href="/admin"
+            className="text-[10px] uppercase tracking-wider text-game-text-muted hover:text-game-text-main transition-colors focus-ring px-2 py-1 rounded-sm"
+          >
+            Admin
+          </Link>
         </header>
 
         {/* Task grid */}
-        <main className="flex-1 p-4 pb-[120px] md:pb-6" role="tabpanel">
+        <main className="flex-1 p-4 pb-[120px] md:pb-6">
           <AnimatePresence mode="wait">
             <motion.div
               key={activeTab}
