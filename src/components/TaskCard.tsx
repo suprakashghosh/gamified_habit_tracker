@@ -41,6 +41,8 @@ interface TaskCardProps {
     error?: string;
   }>;
   isPending: boolean;
+  hasChildren?: boolean;
+  childName?: string;
 }
 
 const TIER_COLORS: Record<string, string> = {
@@ -57,7 +59,7 @@ const TIER_LABELS: Record<string, string> = {
   longterm: "Long Term",
 };
 
-export function TaskCard({ task, onIncrement, onDecrement, isPending }: TaskCardProps) {
+export function TaskCard({ task, onIncrement, onDecrement, isPending, hasChildren, childName }: TaskCardProps) {
   const { addNotification } = useXPNotification();
   const [showLocked, setShowLocked] = useState(false);
   const lockedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -82,6 +84,11 @@ export function TaskCard({ task, onIncrement, onDecrement, isPending }: TaskCard
   const handleTap = useCallback(
     async (e: React.MouseEvent<HTMLButtonElement>) => {
       if (isPending || isInactive) return;
+
+      if (hasChildren) {
+        toast.info(`Complete "${childName ?? "sub-task"}" before updating this quest.`);
+        return;
+      }
 
       const prevCount = optimisticTask.current_count;
       addOptimistic(prevCount + 1);
@@ -124,12 +131,16 @@ export function TaskCard({ task, onIncrement, onDecrement, isPending }: TaskCard
         });
       }
     },
-    [task.id, task.title, isPending, isInactive, optimisticTask.current_count, addOptimistic, onIncrement, addNotification]
+    [task.id, task.title, isPending, isInactive, optimisticTask.current_count, addOptimistic, onIncrement, addNotification, hasChildren, childName]
   );
 
   const handleContextMenu = useCallback(
     async (e: React.MouseEvent<HTMLButtonElement>) => {
       e.preventDefault();
+      if (hasChildren) {
+        toast.info(`Complete "${childName ?? "sub-task"}" before updating this quest.`);
+        return;
+      }
       if (!onDecrement || isMissed || optimisticTask.current_count <= 0) return;
 
       const result = await onDecrement(task.id);
@@ -137,7 +148,7 @@ export function TaskCard({ task, onIncrement, onDecrement, isPending }: TaskCard
         toast.error(result.error || "Failed to decrement");
       }
     },
-    [task.id, isMissed, optimisticTask.current_count, onDecrement]
+    [task.id, isMissed, optimisticTask.current_count, onDecrement, hasChildren, childName]
   );
 
   useEffect(() => {

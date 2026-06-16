@@ -262,66 +262,72 @@ export function AdminClient({ draftTasks }: AdminClientProps) {
   }, [allTaskIds, router]);
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-5xl flex-col gap-[--spacing-xl] p-[--spacing-md] sm:p-[--spacing-xl]">
-      <header className="bg-game-bg-panel border border-game-border rounded-sm p-4 flex items-center justify-between">
-        <div>
-          <h1 className="font-display text-2xl tracking-wide text-game-text-main">
-            Admin
-          </h1>
-          <p className="text-sm text-game-text-muted">
-            Generate, edit, and publish quests.
-          </p>
+    <main className="flex min-h-dvh w-full flex-col">
+      <header className="border-b border-game-border bg-game-bg-header/80 backdrop-blur-md px-4 py-4 md:px-8 md:py-5">
+        <div className="mx-auto flex w-full max-w-7xl flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h1 className="font-display text-xl tracking-wider text-game-text-main md:text-2xl">
+              Admin
+            </h1>
+            <p className="text-sm text-game-text-muted">
+              Generate, edit, and publish quests.
+            </p>
+          </div>
+          <Link
+            href="/"
+            className="inline-flex items-center gap-2 self-start rounded-sm border border-game-border bg-game-bg-panel px-3 py-2 text-sm font-medium text-game-text-muted transition-colors hover:border-game-border-highlight hover:text-game-text-main focus-ring sm:self-auto"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            Back to game
+          </Link>
         </div>
-        <Link
-          href="/"
-          className="inline-flex items-center gap-[--spacing-xs] text-sm font-medium text-game-lunar hover:underline focus-ring"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          Back to game
-        </Link>
       </header>
 
-      {phase === "idle" && (
-        <TodoInput onGenerate={handleGenerate} isLoading={false} />
-      )}
+      <section className="flex-1 px-4 py-6 md:px-8 md:py-8">
+        <div className="mx-auto w-full max-w-7xl">
+          {phase === "idle" && (
+            <TodoInput onGenerate={handleGenerate} isLoading={false} />
+          )}
 
-      {phase === "generating" && (
-        <div className="flex flex-col items-center justify-center gap-[--spacing-md] py-[--spacing-4xl]">
-          <Loader2 className="h-10 w-10 animate-spin text-game-lunar" />
-          <p className="text-base text-game-text-muted">Summoning the quest smith...</p>
-        </div>
-      )}
+          {phase === "generating" && (
+            <div className="flex flex-col items-center justify-center gap-[--spacing-md] py-[--spacing-4xl]">
+              <Loader2 className="h-10 w-10 animate-spin text-game-lunar" />
+              <p className="text-base text-game-text-muted">Summoning the quest smith...</p>
+            </div>
+          )}
 
-      {phase === "clarifying" && (
-        <ClarificationPanel
-          clarifications={clarifications}
-          onResolve={handleResolve}
-          isLoading={false}
-        />
-      )}
+          {phase === "clarifying" && (
+            <ClarificationPanel
+              clarifications={clarifications}
+              onResolve={handleResolve}
+              isLoading={false}
+            />
+          )}
 
-      {phase === "editing" && (
-        <div className="flex flex-col gap-[--spacing-lg]">
-          <TodoInput onGenerate={handleGenerate} isLoading={false} />
-          <TaskTable
-            tasks={tasks}
-            onUpdateTask={handleUpdateTask}
-            onUpdateTaskBlur={flushUpdateTask}
-            onDeleteTask={handleDeleteTask}
-            onAddTask={handleAddTask}
-            onAddChild={handleAddChild}
-            onAllocateChildCounters={handleAllocateChildCounters}
-          />
-          {tasks.length > 0 && (
-            <div className="flex justify-end">
-              <PublishButton
-                onPublish={handlePublish}
-                isLoading={isPublishing}
+          {phase === "editing" && (
+            <div className="flex flex-col gap-[--spacing-xl]">
+              <TodoInput onGenerate={handleGenerate} isLoading={false} />
+              <TaskTable
+                tasks={tasks}
+                onUpdateTask={handleUpdateTask}
+                onUpdateTaskBlur={flushUpdateTask}
+                onDeleteTask={handleDeleteTask}
+                onAddTask={handleAddTask}
+                onAddChild={handleAddChild}
+                onAllocateChildCounters={handleAllocateChildCounters}
               />
+              {tasks.length > 0 && (
+                <div className="flex justify-end">
+                  <PublishButton
+                    onPublish={handlePublish}
+                    isLoading={isPublishing}
+                  />
+                </div>
+              )}
             </div>
           )}
         </div>
-      )}
+      </section>
     </main>
   );
 }

@@ -41,6 +41,46 @@ function isVisibleCompletedRecurring(task: {
   return true;
 }
 
+/** Return all direct children of a task within a flat task list. */
+function getChildren(taskId: string, allTasks: TaskData[]): TaskData[] {
+  return allTasks.filter((t) => t.parent_id === taskId);
+}
+
+/** Recalculate a parent's current_count, max_count, and status from its children. */
+function recalcParent(allTasks: TaskData[], parentId: string): TaskData[] {
+  const parent = allTasks.find((t) => t.id === parentId);
+  if (!parent) return allTasks;
+  const children = getChildren(parentId, allTasks);
+  const sumCurrent = children.reduce((s, c) => s + c.current_count, 0);
+  const sumMax = children.reduce((s, c) => s + c.max_count, 0);
+  const isComplete = sumMax > 0 && sumCurrent >= sumMax;
+  return allTasks.map((t) =>
+    t.id === parentId
+      ? {
+          ...t,
+          current_count: sumCurrent,
+          max_count: sumMax,
+          status: isComplete ? ("completed" as const) : ("active" as const),
+          completed_at: isComplete ? t.completed_at : null,
+        }
+      : t
+  );
+}
+
+/** Walk up the parent chain and recalculate every ancestor. */
+function recalcAncestors(allTasks: TaskData[], leafId: string): TaskData[] {
+  const task = allTasks.find((t) => t.id === leafId);
+  if (!task) return allTasks;
+  let next = allTasks;
+  let parentId: string | null = task.parent_id;
+  while (parentId) {
+    next = recalcParent(next, parentId);
+    const parent = next.find((t) => t.id === parentId);
+    parentId = parent?.parent_id ?? null;
+  }
+  return next;
+}
+
 interface TaskData extends TaskCardTask {
   children?: TaskData[];
 }
@@ -100,8 +140,8 @@ function QuestBoardContent({
 
       startTransition(() => {
         if (!result.locked) {
-          setTasks((prev) =>
-            prev.map((t) =>
+          setTasks((prev) => {
+            const next = prev.map((t) =>
               t.id === taskId
                 ? {
                     ...t,
@@ -112,8 +152,9 @@ function QuestBoardContent({
                         : t.status,
                   }
                 : t
-            )
-          );
+            );
+            return recalcAncestors(next, taskId);
+          });
 
           if (result.xpAwarded) {
             setXPState((prev) => ({
@@ -144,8 +185,8 @@ function QuestBoardContent({
       const newCount = task.current_count - 1;
 
       startTransition(() => {
-        setTasks((prev) =>
-          prev.map((t) =>
+        setTasks((prev) => {
+          const next = prev.map((t) =>
             t.id === taskId
               ? {
                   ...t,
@@ -160,8 +201,9 @@ function QuestBoardContent({
                       : t.completed_at,
                 }
               : t
-          )
-        );
+          );
+          return recalcAncestors(next, taskId);
+        });
       });
 
       try {
@@ -197,6 +239,25 @@ function QuestBoardContent({
   );
   const missedTasks = tabTasks.filter((t) => t.status === "missed");
   const completedTasks = tabTasks.filter((t) => t.status === "completed");
+
+  const childrenByParent = new Map<string, TaskData[]>();
+  for (const t of tasks) {
+    if (t.parent_id) {
+      const siblings = childrenByParent.get(t.parent_id) ?? [];
+      siblings.push(t);
+      childrenByParent.set(t.parent_id, siblings);
+    }
+  }
+
+  function hasIncompleteChildren(taskId: string): boolean {
+    const children = childrenByParent.get(taskId);
+    return !!children && children.some((c) => c.status !== "completed");
+  }
+
+  function firstIncompleteChildName(taskId: string): string | undefined {
+    const children = childrenByParent.get(taskId);
+    return children?.find((c) => c.status !== "completed")?.title;
+  }
 
   const handleReorder = useCallback(
     (reordered: TaskData[]) => {
@@ -337,6 +398,8 @@ function QuestBoardContent({
                             onIncrement={handleIncrement}
                             onDecrement={handleDecrement}
                             isPending={isPending}
+                            hasChildren={hasIncompleteChildren(task.id)}
+                            childName={firstIncompleteChildName(task.id)}
                           />
                         </Reorder.Item>
                       ))}
@@ -357,6 +420,8 @@ function QuestBoardContent({
                             onIncrement={handleIncrement}
                             onDecrement={handleDecrement}
                             isPending={isPending}
+                            hasChildren={hasIncompleteChildren(task.id)}
+                            childName={firstIncompleteChildName(task.id)}
                           />
                         ))}
                       </div>
@@ -377,6 +442,8 @@ function QuestBoardContent({
                             onIncrement={handleIncrement}
                             onDecrement={handleDecrement}
                             isPending={isPending}
+                            hasChildren={hasIncompleteChildren(task.id)}
+                            childName={firstIncompleteChildName(task.id)}
                           />
                         ))}
                       </div>

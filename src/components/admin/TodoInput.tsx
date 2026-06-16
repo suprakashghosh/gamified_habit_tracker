@@ -18,19 +18,19 @@ export function TodoInput({ onGenerate, isLoading }: TodoInputProps) {
   }
 
   return (
-    <div className="flex flex-col gap-[--spacing-md]">
+    <div className="flex flex-col gap-3">
       <label className="font-display text-[10px] tracking-wider text-game-text-dim uppercase">
         Paste your todos
       </label>
-      <textarea
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        placeholder="Read 20 pages, drink 8 glasses of water, run a 5k..."
-        rows={6}
-        disabled={isLoading}
-        className="w-full resize-y bg-game-bg-panel border border-game-border p-[--spacing-md] font-mono text-sm text-game-text-main outline-none transition-colors placeholder:text-game-text-dim focus:border-game-lunar disabled:opacity-60 rounded-sm"
-      />
-      <div className="flex justify-end">
+      <div className="flex flex-col gap-3 rounded-lg border border-game-border bg-game-bg-panel p-3 shadow-lg focus-within:border-game-lunar transition-colors sm:flex-row sm:items-start">
+        <textarea
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          placeholder="Read 20 pages, drink 8 glasses of water, run a 5k..."
+          rows={4}
+          disabled={isLoading}
+          className="w-full flex-1 resize-y bg-transparent px-2 py-1 font-mono text-sm text-game-text-main outline-none placeholder:text-game-text-dim disabled:opacity-60"
+        />
         <GenerateButton onClick={handleSubmit} isLoading={isLoading} />
       </div>
     </div>
